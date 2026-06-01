@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1292,4 +1293,35 @@ func fetchIndexAll(code, klineType string) ([]*protocol.Kline, error) {
 		}
 		return resp.List, nil
 	}
+}
+
+// parseKlineDateRange 解析 start_date/end_date, 缺省时不报错(返回 zero 值表示不限制)
+func parseKlineDateRange(r *http.Request) (start, end time.Time, err error) {
+	if s := r.URL.Query().Get("start_date"); s != "" {
+		start, err = parseFullDate(s)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("start_date 格式错误: %w", err)
+		}
+	}
+	if e := r.URL.Query().Get("end_date"); e != "" {
+		end, err = parseFullDate(e)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("end_date 格式错误: %w", err)
+		}
+	}
+	if !start.IsZero() && !end.IsZero() && start.After(end) {
+		return time.Time{}, time.Time{}, errors.New("start_date 早于 end_date")
+	}
+	return start, end, nil
+}
+
+// inDateRange 检查 t 是否在 [start, end] 区间内, 零值表示不限
+func inDateRange(t, start, end time.Time) bool {
+	if !start.IsZero() && t.Before(start) {
+		return false
+	}
+	if !end.IsZero() && t.After(end) {
+		return false
+	}
+	return true
 }
