@@ -33,6 +33,8 @@ XDXR_CATEGORY_MAPPING = {
 
 type gbbq struct{}
 
+var MGbbq = gbbq{}
+
 func (gbbq) Frame(code string) (*Frame, error) {
 	exchange, number, err := DecodeCode(code)
 	if err != nil {

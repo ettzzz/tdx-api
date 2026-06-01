@@ -167,6 +167,9 @@ func (this *Client) handlerDealMessage(c *client.Client, msg ios.Acker) {
 	case protocol.TypeKline:
 		resp, err = protocol.MKline.Decode(f.Data, val.(protocol.KlineCache))
 
+	case protocol.TypeGbbq:
+		resp, err = protocol.MGbbq.Decode(f.Data)
+
 	default:
 		err = fmt.Errorf("通讯类型未解析:0x%X", f.Type)
 
@@ -734,6 +737,38 @@ func (this *Client) GetKlineDay(code string, start, count uint16) (*protocol.Kli
 // GetKlineDayAll 获取日k线全部数据
 func (this *Client) GetKlineDayAll(code string) (*protocol.KlineResp, error) {
 	return this.GetKlineAll(protocol.TypeKlineDay, code)
+}
+
+// GetGbbq 获取单只股票 gbbq (股本变迁 + 除权除息)
+func (this *Client) GetGbbq(code string) (*protocol.GbbqResp, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MGbbq.Frame(code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.GbbqResp), nil
+}
+
+// GetGbbqAll 拉取全市场 gbbq 数据
+func (this *Client) GetGbbqAll() (map[string][]*protocol.Gbbq, error) {
+	codes, err := this.GetStockAll()
+	if err != nil {
+		return nil, err
+	}
+	gbbqs := map[string][]*protocol.Gbbq{}
+	var resp *protocol.GbbqResp
+	for _, code := range codes {
+		resp, err = this.GetGbbq(code)
+		if err != nil {
+			return nil, err
+		}
+		gbbqs[code] = resp.List
+	}
+	return gbbqs, nil
 }
 
 func (this *Client) GetKlineDayUntil(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
