@@ -65,7 +65,8 @@ USER appuser
 EXPOSE 8080
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+# start-period=600s: 首次启动 gbbq.Update() 会同步阻塞数分钟拉 6000+ 股票, healthcheck 需要等待
+HEALTHCHECK --interval=30s --timeout=3s --start-period=600s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
 
 # 启动应用
