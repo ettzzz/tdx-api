@@ -439,22 +439,206 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 **接口**: `GET /api/kline-history`
 
-**描述**: 获取指定时间范围的K线数据
+**描述**: 获取指定股票在指定时间范围内的 K 线数据。**支持日期范围过滤**（`start_date` / `end_date` 缺省时不限制）。日 / 周 / 月 K 线走前复权通道（基于同花顺日 K 转换），分钟级返回原始数据。**仅服务个股**，指数 / 板块请使用 `/api/kline-index-history`。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |-----|------|------|------|
-| code | string | 是 | 股票代码 |
-| type | string | 是 | K线类型 |
-| start_date | string | 否 | 开始日期（YYYYMMDD） |
-| end_date | string | 否 | 结束日期（YYYYMMDD） |
-| limit | int | 否 | 返回条数，默认100，最大800 |
+| code | string | 是 | 个股代码（如 000001、600519） |
+| type | string | 是 | K线类型，取值见下表 |
+| start_date | string | 否 | 开始日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时不限制起点 |
+| end_date | string | 否 | 结束日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时不限制终点 |
+| limit | int | 否 | 返回条数（从最近开始截取），默认100，最大800 |
+
+**K线类型(type)**:
+- `minute1` / `minute5` / `minute15` / `minute30` / `hour` - 分钟级 K 线（原始数据）
+- `day` / `week` / `month` - 日 / 周 / 月 K 线（前复权）
 
 **请求示例**:
 ```
 GET /api/kline-history?code=000001&type=day&limit=30
 GET /api/kline-history?code=000001&type=day&start_date=20241001&end_date=20241101
+GET /api/kline-history?code=600519&type=minute30&start_date=20241101&end_date=20241108
 ```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "Count": 23,
+    "List": [
+      {
+        "Time": "2024-01-02T00:00:00Z",
+        "Open": 850,
+        "High": 870,
+        "Low": 845,
+        "Close": 860,
+        "Volume": 1235000,
+        "Amount": 156000000000,
+        "Last": 840
+      }
+    ]
+  }
+}
+```
+
+**数据说明**:
+- 价格单位：厘（1 元 = 1000 厘）
+- 成交量单位：手（1 手 = 100 股）
+- 成交额单位：厘
+- `start_date` / `end_date` 同时省略时返回最近 800 条；指定任一端时按区间裁剪
+
+---
+
+### 9.1 获取指数 / 板块历史 K 线
+
+**接口**: `GET /api/kline-index-history`
+
+**描述**: 获取指数 / 板块的日 K 线（仅日 K，不复权）。支持日期范围过滤。`code` 必须显式带交易所前缀，涵盖综合指数（`sh000xxx` / `sz399xxx`）、概念板块（`sh880xxx`）、行业板块（`sh881xxx`）。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 指数 / 板块代码（必须显式前缀，如 `sh000001`、`sz399006`、`sh880666`） |
+| start_date | string | 否 | 开始日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时不限制起点 |
+| end_date | string | 否 | 结束日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时不限制终点 |
+
+**请求示例**:
+```
+GET /api/kline-index-history?code=sh000001
+GET /api/kline-index-history?code=sh000001&start_date=20240101&end_date=20240131
+GET /api/kline-index-history?code=sz399006
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 23,
+    "list": [
+      {
+        "Time": "2024-01-02T00:00:00Z",
+        "Open": 297200,
+        "High": 298800,
+        "Low": 296800,
+        "Close": 298500,
+        "Volume": 123500000,
+        "Amount": 156000000000000,
+        "Last": 297200,
+        "UpCount": 1800,
+        "DownCount": 1500
+      }
+    ]
+  }
+}
+```
+
+**数据说明**:
+- 仅返回日 K 线；指数 K 线额外保留 `UpCount` / `DownCount` 字段（涨跌家数）
+- 价格单位：厘；成交量单位：手；成交额单位：厘
+- 与 `/api/kline-history` 响应字段保持一致，便于同一套代码处理
+
+---
+
+### 9.2 获取个股换手率序列
+
+**接口**: `GET /api/turnover`
+
+**描述**: 按日计算个股换手率（成交股数 / 流通股本 × 100%）。数据源为通达信日 K 线（不复权） + gbbq 内存缓存中的流通股本。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 个股代码（如 `000001`、`600519`） |
+| start_date | string | 否 | 开始日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时返回全部历史 |
+| end_date | string | 否 | 结束日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时取到最近一日 |
+
+**请求示例**:
+```
+GET /api/turnover?code=000001
+GET /api/turnover?code=000001&start_date=20240101&end_date=20240131
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "sz000001",
+    "count": 23,
+    "list": [
+      {
+        "date": "2024-01-02",
+        "turnover": 0.85,
+        "float": 19405571850
+      }
+    ]
+  }
+}
+```
+
+**数据说明**:
+- `turnover` 单位为**百分比**（1.23 表示 1.23%）
+- `float` 单位为**股**（流通股本）
+- 计算公式：`turnover = (kline.Volume * 100 / float) * 100`（已封装为 `protocol.Equity.Turnover`）
+- TDX 成交量单位为**手**（1 手 = 100 股），内部已转换
+- 当 gbbq 缓存尚未同步该股股本数据时，对应日期 `turnover` 为 0、`float` 为 0
+
+---
+
+### 9.3 获取个股股本变迁 / 除权除息
+
+**接口**: `GET /api/gbbq`
+
+**描述**: 返回指定日期范围内个股的股本变化与除权除息事件。数据源为 TDX 协议层推送的 gbbq 记录，由 `gbbq` 管理器在内存中缓存。`date` 字段为**生效日**（TDX 推送时间为 15:00 表示当日已生效，对外以 +1 天为生效日）。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 个股代码（如 `000001`、`600519`） |
+| start_date | string | 否 | 开始日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时返回全部历史 |
+| end_date | string | 否 | 结束日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时取到最近一日 |
+
+**请求示例**:
+```
+GET /api/gbbq?code=000001
+GET /api/gbbq?code=000001&start_date=20240101&end_date=20240131
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "sz000001",
+    "equity": [
+      {"date": "2024-06-19", "category": 5, "float": 19405753400, "total": 19405753400}
+    ],
+    "xrxd": [
+      {"date": "2024-06-19", "fenhong": 1.6, "peigujia": 0, "songzhuangu": 0, "peigu": 0}
+    ]
+  }
+}
+```
+
+**数据说明**:
+- `equity`（股本变化）字段：
+  - `date` - 生效日（`YYYY-MM-DD`）
+  - `category` - 变化类型：2=送配股上市, 3=非流通股上市, 5=股本变化, 7=股份回购, 8=增发新股上市, 9=转配股上市, 10=可转债上市
+  - `float` / `total` - 流通 / 总股本，单位为**股**
+- `xrxd`（除权除息）字段（每 10 股对应数值）：
+  - `date` - 生效日
+  - `fenhong` - 分红（元 / 10 股）
+  - `peigujia` - 配股价
+  - `songzhuangu` - 送转股
+  - `peigu` - 配股
+- 当 gbbq 缓存尚未同步时，`equity` / `xrxd` 均为空数组
 
 ---
 
