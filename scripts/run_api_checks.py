@@ -34,6 +34,10 @@ ENDPOINTS = [
     ("workday_range", "GET", "/api/workday/range?start=2024-11-01&end=2024-11-08"),
     ("income", "GET", "/api/income?code=000001&start_date=2024-11-01&days=5,10,20"),
     ("tasks_list", "GET", "/api/tasks"),
+    ("turnover", "GET", "/api/turnover?code=000001&start_date=20240101&end_date=20240131"),
+    ("gbbq", "GET", "/api/gbbq?code=000001&start_date=20240101&end_date=20240131"),
+    ("kline_index_history", "GET", "/api/kline-index-history?code=sh000001&start_date=20240101&end_date=20240131"),
+    ("kline_history_dated", "GET", "/api/kline-history?code=000001&type=day&start_date=20240101&end_date=20240131"),
 ]
 
 
