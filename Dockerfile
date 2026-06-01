@@ -55,8 +55,11 @@ COPY --from=builder /app/stock-web .
 COPY --from=builder /app/web/static ./static
 # ===================================================================
 
-# 更改文件所有者
+# 更改文件所有者 (含 /app/data 供 sqlite 持久化, gbbq.db 写入需要)
 RUN chown -R appuser:appuser /app
+
+# 预创建数据目录, 确保 appuser 有写权限 (gbbq.db / codes.db / workday.db)
+RUN mkdir -p /app/data/database && chown -R appuser:appuser /app/data
 
 # 切换到非root用户
 USER appuser

@@ -12,14 +12,23 @@ services:
     networks:
       - stock-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
-      start_period: 5s
+      # start-period=600s: 首次启动 gbbq.Update() 会同步阻塞数分钟拉 6000+ 股票, healthcheck 需要等待
+      start_period: 600s
+    volumes:
+      # 持久化 sqlite 数据库 (codes.db / workday.db / gbbq.db)
+      # 避免容器重启时 gbbq.Update() 重新阻塞数分钟
+      - tdx-data:/app/data/database
     labels:
       - "com.stock.description=TDX Stock Data Query System"
       - "com.stock.version=1.0.0"
+
+volumes:
+  tdx-data:
+    driver: local
 
 networks:
   stock-network:
