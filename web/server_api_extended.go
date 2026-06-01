@@ -104,80 +104,74 @@ func handleBatchQuote(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, quotes)
 }
 
-// 获取历史K线（指定范围，日/周/月K线使用前复权）
+// 获取历史K线（指定日期范围，日/周/月K线使用前复权）
+// 支持 start_date/end_date 按时间区间过滤,缺省时不限制
 func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	klineType := r.URL.Query().Get("type")
-	limitStr := r.URL.Query().Get("limit")
 
 	if code == "" {
 		errorResponse(w, "股票代码不能为空")
 		return
 	}
 
-	// 解析limit，默认100，最大800
-	limit := uint16(100)
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			if l > 800 {
-				l = 800
-			}
-			limit = uint16(l)
-		}
+	// 解析日期范围
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
 	}
 
 	var resp *protocol.KlineResp
-	var err error
 
 	switch klineType {
 	case "minute1":
-		resp, err = client.GetKlineMinute(code, 0, limit)
+		resp, _ = client.GetKlineMinuteAll(code)
 	case "minute5":
-		resp, err = client.GetKline5Minute(code, 0, limit)
+		resp, _ = client.GetKline5MinuteAll(code)
 	case "minute15":
-		resp, err = client.GetKline15Minute(code, 0, limit)
+		resp, _ = client.GetKline15MinuteAll(code)
 	case "minute30":
-		resp, err = client.GetKline30Minute(code, 0, limit)
+		resp, _ = client.GetKline30MinuteAll(code)
 	case "hour":
-		resp, err = client.GetKlineHour(code, 0, limit)
+		resp, _ = client.GetKlineHourAll(code)
 	case "week":
-		// 周K线使用前复权
+		// 周K线走前复权日K线再转换
 		resp, err = getQfqKlineDay(code)
 		if err == nil {
 			resp = convertToWeekKline(resp)
-			// 限制返回数量
-			if len(resp.List) > int(limit) {
-				resp.List = resp.List[len(resp.List)-int(limit):]
-				resp.Count = limit
-			}
 		}
 	case "month":
-		// 月K线使用前复权
+		// 月K线走前复权日K线再转换
 		resp, err = getQfqKlineDay(code)
 		if err == nil {
 			resp = convertToMonthKline(resp)
-			// 限制返回数量
-			if len(resp.List) > int(limit) {
-				resp.List = resp.List[len(resp.List)-int(limit):]
-				resp.Count = limit
-			}
 		}
 	case "day":
 		fallthrough
 	default:
 		// 日K线使用前复权
 		resp, err = getQfqKlineDay(code)
-		if err == nil && len(resp.List) > int(limit) {
-			// 只返回最近limit条
-			resp.List = resp.List[len(resp.List)-int(limit):]
-			resp.Count = limit
-		}
 	}
 
-	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取K线失败: %v", err))
+	if resp == nil {
+		errorResponse(w, "获取K线失败")
 		return
 	}
+
+	// 日期过滤
+	filtered := make([]*protocol.Kline, 0, len(resp.List))
+	for _, k := range resp.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		filtered = append(filtered, k)
+	}
+	resp.List = filtered
+	resp.Count = uint16(len(filtered))
 
 	successResponse(w, resp)
 }
@@ -1324,4 +1318,156 @@ func inDateRange(t, start, end time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// handleGetTurnover 获取个股换手率序列
+// 计算逻辑: turnover = kline.Volume * 100 / 流通股本 * 100,单位为百分比
+// volume 单位为手 (1 手 = 100 股),所以乘 100 转成股
+func handleGetTurnover(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	// 拉取日K线 (不复权,换手率与价格无关)
+	klines, err := client.GetKlineDayAll(code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取K线失败: %v", err))
+		return
+	}
+
+	list := make([]map[string]any, 0, len(klines.List))
+	for _, k := range klines.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		// 取当日生效的流通股本
+		eq := gbbq.GetEquity(code, k.Time)
+		var turnover float64
+		var floatShares int64
+		if eq != nil && eq.Float > 0 {
+			// TDX 成交量单位是手,需 * 100 转成股
+			turnover = float64(k.Volume*100) / float64(eq.Float) * 100
+			floatShares = eq.Float
+		}
+		list = append(list, map[string]any{
+			"date":     k.Time.Format("2006-01-02"),
+			"turnover": turnover,
+			"float":    floatShares,
+		})
+	}
+
+	successResponse(w, map[string]any{
+		"code":  protocol.AddPrefix(code),
+		"count": len(list),
+		"list":  list,
+	})
+}
+
+// handleGetGbbq 获取个股股本变迁/除权除息记录
+// TDX 推送时间 15:00 表示当日已生效,这里 +1 天作为 effective_date (除权除息日次日)
+// 用户按"哪天发生了除权除息"来理解,与 TDX 推送日 +1 一致
+func handleGetGbbq(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	fullCode := protocol.AddPrefix(code)
+	equity := make([]map[string]any, 0)
+	xrxd := make([]map[string]any, 0)
+
+	if gbbq != nil {
+		for _, g := range gbbq.All()[fullCode] {
+			if g == nil {
+				continue
+			}
+			// +1 天作为对外的有效日期 (TDX 推 15:00 表示当日生效,次日股价才反映)
+			effectiveDate := g.Time.Add(24 * time.Hour)
+			if !inDateRange(effectiveDate, start, end) {
+				continue
+			}
+			d := effectiveDate.Format("2006-01-02")
+			if g.IsEquity() {
+				e := g.Equity()
+				equity = append(equity, map[string]any{
+					"date":     d,
+					"category": e.Category,
+					"float":    e.Float,
+					"total":    e.Total,
+				})
+			}
+			if g.IsXRXD() {
+				x := g.XRXD()
+				xrxd = append(xrxd, map[string]any{
+					"date":         d,
+					"fenhong":      x.Fenhong,
+					"peigujia":     x.Peigujia,
+					"songzhuangu":  x.Songzhuangu,
+					"peigu":        x.Peigu,
+				})
+			}
+		}
+	}
+
+	successResponse(w, map[string]any{
+		"code":   fullCode,
+		"equity": equity,
+		"xrxd":   xrxd,
+	})
+}
+
+// handleGetKlineIndexHistory 获取指数/板块历史日K线
+// 仅日 K,不不复权,日期范围可选
+func handleGetKlineIndexHistory(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "指数代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	klines, err := client.GetIndexDayAll(code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取指数K线失败: %v", err))
+		return
+	}
+
+	list := make([]*protocol.Kline, 0, len(klines.List))
+	for _, k := range klines.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		list = append(list, k)
+	}
+
+	successResponse(w, map[string]any{
+		"count": len(list),
+		"list":  list,
+	})
 }

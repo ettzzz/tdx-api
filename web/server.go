@@ -19,6 +19,7 @@ import (
 var (
 	client      *tdx.Client
 	manager     *tdx.Manage
+	gbbq        *tdx.Gbbq
 	taskManager = NewTaskManager()
 )
 
@@ -59,6 +60,17 @@ func init() {
 		log.Printf("更新交易日数据失败: %v", err)
 	}
 	manager.Cron.Start()
+
+	// 初始化 gbbq 管理器 (在 manager 之后)
+	gbbq, err = tdx.NewGbbq(tdx.WithGbbqClient(client))
+	if err != nil {
+		log.Fatalf("初始化 gbbq 失败: %v", err)
+	}
+	log.Println("正在更新 gbbq 缓存 (首次启动可能耗时数分钟)...")
+	if err := gbbq.Update(); err != nil {
+		log.Fatalf("更新 gbbq 缓存失败: %v", err)
+	}
+	log.Printf("gbbq 缓存就绪, 共 %d 只股票\n", len(gbbq.All()))
 }
 
 // Response 统一响应结构
@@ -718,6 +730,9 @@ func main() {
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
 	http.HandleFunc("/api/kline-history", handleGetKlineHistory)
+	http.HandleFunc("/api/turnover", handleGetTurnover)
+	http.HandleFunc("/api/gbbq", handleGetGbbq)
+	http.HandleFunc("/api/kline-index-history", handleGetKlineIndexHistory)
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
