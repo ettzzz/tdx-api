@@ -848,6 +848,36 @@ curl -X POST http://127.0.0.1:8080/api/gbbq/refresh \
 GET /api/index?code=sh000001&type=day
 ```
 
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "Count": 100,
+    "List": [
+      {
+        "Last":      3080,
+        "Open":      3100,
+        "High":      3120,
+        "Low":       3070,
+        "Close":     3110,
+        "Volume":    1234567,
+        "Amount":    0,
+        "Time":      "2024-11-08T00:00:00Z",
+        "UpCount":   1234,
+        "DownCount": 567
+      }
+    ]
+  }
+}
+```
+
+**数据说明**:
+- 与 `/api/kline` 个股响应结构相同（KlineResp），但 `UpCount` / `DownCount` 字段在指数上有意义
+- 价格/成交量单位同 §2
+```
+
 ---
 
 ### 11. 获取服务状态
@@ -1286,16 +1316,56 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ### 22. 获取股票全部历史K线
 
-**接口**: `GET /api/kline-all`
+**接口**: `GET /api/kline-all`（别名 `/api/kline-all/tdx`）
 
-**描述**: 返回指定股票在某个周期的全部历史 K 线数据（天、周、月自动使用前复权）。
+**描述**: 返回指定股票在某个周期的全部历史 K 线数据，**数据源为通达信原始（不复权）**。
+如需前复权数据请使用 `/api/kline-all/ths` 或 `/api/kline-history`（推荐）。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| code | string | 是 | 股票代码 |
+| code | string | 是 | 股票代码（如：000001） |
 | type | string | 否 | K 线类型，默认 day，可选 minute1/5/15/30/hour/day/week/month/quarter/year |
 | limit | int | 否 | 返回条数限制（从最近开始截取） |
+
+**请求示例**:
+```
+GET /api/kline-all/tdx?code=000001&type=day&limit=200
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 200,
+    "list": [
+      {
+        "Last":      12250,
+        "Open":      12300,
+        "High":      12600,
+        "Low":       12280,
+        "Close":     12500,
+        "Volume":    1235000,
+        "Amount":    156000000,
+        "Time":      "2024-11-08T00:00:00Z",
+        "UpCount":   0,
+        "DownCount": 0
+      }
+    ],
+    "meta": {
+      "source":      "tdx",
+      "type":        "day",
+      "batch_limit": 800,
+      "notes":       [
+        "通达信单次底层请求最多返回 800 条数据，服务端已顺序拼接全量结果",
+        "对于上市时间较长的标的，请预估调用耗时（通常 1-5 秒），客户端可增加超时时间"
+      ]
+    }
+  }
+}
+```
 
 **注意**: 全量数据较大，建议配合 `limit` 控制响应大小。
 
@@ -1305,9 +1375,43 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 **接口**: `GET /api/index/all`
 
-**描述**: 返回指数在各周期的全部历史 K 线数据。
+**描述**: 返回指数在各周期的全部历史 K 线数据。**数据源为通达信原始（不复权）**——指数通常不需要复权。
 
-**请求参数**与 `/api/kline-all` 相同。
+**请求参数**与 `/api/kline-all` 相同（见 §22）。
+
+**请求示例**:
+```
+GET /api/index/all?code=sh000001&type=day
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 200,
+    "list": [
+      {
+        "Last":      3080,
+        "Open":      3100,
+        "High":      3120,
+        "Low":       3070,
+        "Close":     3110,
+        "Volume":    1234567,
+        "Amount":    0,
+        "Time":      "2024-11-08T00:00:00Z",
+        "UpCount":   1234,
+        "DownCount": 567
+      }
+    ]
+  }
+}
+```
+
+**数据说明**:
+- 指数 K 线自带 `UpCount` / `DownCount` 字段（涨跌家数），个股 K 线这两字段恒为 0
+- 数据源为通达信；同花顺不提供指数全量接口
 
 ---
 
@@ -1316,13 +1420,65 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 **接口**: `GET /api/trade-history/full`
 
 **描述**: 返回指定股票上市以来的全部历史分时成交明细，可选截断截止日期与限制数量。
+**分日期批次拉取**，单日 TDX 最多返回 2000 条，全量范围可能较大，建议配合 `limit` 控制。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | code | string | 是 | 股票代码 |
-| before | string | 否 | 截止日期（YYYYMMDD 或 YYYY-MM-DD），默认今日 |
+| start_date | string | 否 | 起始日期（YYYYMMDD 或 YYYY-MM-DD），缺省时不限制起点 |
+| end_date | string | 否 | 结束日期（YYYYMMDD 或 YYYY-MM-DD），默认昨日（不含今天） |
+| before | string | 否 | 截止日期（同 `end_date`，二选一；优先级高于 `end_date`） |
+| include_today | bool | 否 | 是否包含当天数据（默认 `false`；TDX 当日数据持续回填，建议等收盘后） |
 | limit | int | 否 | 返回条数限制（从最近开始截取） |
+
+**请求示例**:
+```
+GET /api/trade-history/full?code=000001&start_date=20241101&end_date=20241108&limit=5000
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code":          "000001",
+    "start_date":    "2024-11-01",
+    "end_date":      "2024-11-08",
+    "limit":         5000,
+    "count":         1234,
+    "truncated":     false,
+    "covered_dates": ["20241101", "20241104", "20241105", "20241106", "20241107", "20241108"],
+    "list": [
+      {
+        "time":   "2024-11-08T14:59:58Z",
+        "price":  12.50,
+        "volume": 100,
+        "status": 0,
+        "number": 5
+      }
+    ]
+  }
+}
+```
+
+**响应字段**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | string | 入参股票代码 |
+| `start_date` / `end_date` | string | 实际处理的时间范围（YYYY-MM-DD） |
+| `limit` | int | 入参限制 |
+| `count` | int | 实际返回条数 |
+| `truncated` | bool | 是否被 `limit` 截断（true 时 `covered_dates` 不完整） |
+| `covered_dates` | []string | 实际拉到的交易日列表（YYYYMMDD） |
+| `list` | array | 分时成交明细数组 |
+| `list[].time` | string | 成交时间（RFC3339，UTC） |
+| `list[].price` | float64 | 成交价（元；厘 ÷ 1000） |
+| `list[].volume` | int | 成交量（手） |
+| `list[].status` | int | 0=主动买入(红色), 1=主动卖出(绿色), 2=中性 |
+| `list[].number` | int | 成交单数 |
 
 ---
 
@@ -1330,13 +1486,39 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 **接口**: `GET /api/workday/range`
 
-**描述**: 返回指定起止日期之间的所有交易日。
+**描述**: 返回指定起止日期之间的所有交易日（含起止两天本身，若是交易日）。
+底层走 `manager.Workday.Range`，**未命中本地缓存时自动从 TDX 拉取**（首次启动或新日期段）。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | start | string | 是 | 起始日期（YYYYMMDD 或 YYYY-MM-DD） |
-| end | string | 是 | 结束日期（YYYYMMDD 或 YYYY-MM-DD） |
+| end | string | 是 | 结束日期（YYYYMMDD 或 YYYY-MM-DD），需 ≥ start |
+
+**请求示例**:
+```
+GET /api/workday/range?start=2024-11-01&end=2024-11-08
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": [
+    {"iso": "2024-11-01", "numeric": "20241101"},
+    {"iso": "2024-11-04", "numeric": "20241104"},
+    {"iso": "2024-11-05", "numeric": "20241105"},
+    {"iso": "2024-11-06", "numeric": "20241106"},
+    {"iso": "2024-11-07", "numeric": "20241107"},
+    {"iso": "2024-11-08", "numeric": "20241108"}
+  ]
+}
+```
+
+**响应字段**:
+- 每个元素含 `iso`（YYYY-MM-DD 格式）和 `numeric`（YYYYMMDD 格式）两个日期表达
+- 返回已排序（升序）
 
 ---
 
