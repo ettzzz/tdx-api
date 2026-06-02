@@ -1,8 +1,30 @@
+# ===== 运行时产物 =====
 # SQLite 数据库 (运行时生成, 不入版本控制)
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 
-# 文档 (本地草稿, 不入版本控制)
+# ===== 编译/构建产物 =====
+# Python 字节码 / 虚拟环境
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Go build 产物 (web/ 是 cd web && go build . 的输出目录)
+# 路径前的 / 锚定到仓库根, 避免误伤其他子目录
+/web/web
+/web/web.exe
+/web/server
+/web/server.exe
+/stock-web
+/stock-web.exe
+
+# ===== 本地草稿 / 工作日志 =====
+# PLAN*.md 是临时规划草稿 (PLAN.md / PLAN_v2.md 都不入库)
+# PROCESS.md 是工作日志 (按用户要求不入版本控制)
 PLAN*.md
+PROCESS.md
