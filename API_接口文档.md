@@ -872,6 +872,91 @@ GET /api/index?code=sh000001&type=day
 
 ---
 
+### 11a. 健康检查（增强版）
+
+**接口**: `GET /api/health`
+
+**描述**: 进程级健康检查，给 docker healthcheck / k8s liveness probe 用。**PLAN_v2 §2.3.3** 增强版：除 `status` 外还返回进程级运行时指标。**已切到标准响应信封**（`{code, message, data}`），老格式 `{"status":"healthy","time":...}` 不再保留。
+
+**请求参数**: 无
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "status":          "healthy",
+    "time":            1730617200,
+    "uptime_seconds":  123,
+    "gbbq_cache_size": 0,
+    "goroutines":      12,
+    "memory_mb":       8
+  }
+}
+```
+
+**响应字段**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | 固定 `"healthy"`，只要进程能响应就 200 |
+| `time` | int64 | 当前 unix 时间戳（秒），**不再是写死的 1730617200** |
+| `uptime_seconds` | int64 | 进程启动至今的秒数，与 `/api/ready` 同一基准 |
+| `gbbq_cache_size` | int | gbbq 内存缓存中的股票数；`0` 表示尚未拉过（正常冷启动状态） |
+| `goroutines` | int | 当前 goroutine 数，用来辅助观察是否有泄漏 |
+| `memory_mb` | int | 当前堆分配内存（`runtime.MemStats.Alloc`），粗略指标 |
+
+**请求示例**:
+```
+GET /api/health
+```
+
+**典型用途**:
+- docker `HEALTHCHECK` 探活（容器内 `wget --spider http://localhost:8080/api/health`）
+- k8s `livenessProbe`——进程崩溃 / OOM 时返回非 200
+- 监控 / 告警系统定时拉取，采集 `gbbq_cache_size` / `goroutines` / `memory_mb` 做趋势图
+
+---
+
+### 11b. 就绪检查
+
+**接口**: `GET /api/ready`
+
+**描述**: 就绪检查，**PLAN_v2 §2.3.4** 新增。语义为 "服务可接收 HTTP 请求"——给 k8s `readinessProbe` / 反向代理 upstream 健康检查用。
+
+**与 `/api/health` 的差异**:
+
+| 维度 | `/api/health` | `/api/ready` |
+|------|---------------|--------------|
+| 语义 | 进程级存活 | 服务可接收请求 |
+| 失败含义 | 进程崩溃 / 死锁 | 启动未完成 / 过载拒绝流量 |
+| 典型用途 | docker healthcheck / k8s liveness | k8s readiness / nginx upstream |
+| 响应字段 | status + 6 个运行时指标 | ready + uptime_seconds |
+
+**§3 之后语义变化**：gbbq 缓存按需拉取（`POST /api/gbbq/refresh`），启动时不再阻塞；**gbbq 缓存是否为空不再阻塞 ready**。缓存空时 `/api/turnover` 等端点仍正常返回（turnover=0），由调用方按需主动触发 refresh。
+
+**请求参数**: 无
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "ready":          true,
+    "uptime_seconds": 12
+  }
+}
+```
+
+**请求示例**:
+```
+GET /api/ready
+```
+
+---
+
 ### 12. 创建批量K线入库任务
 
 **接口**: `POST /api/tasks/pull-kline`

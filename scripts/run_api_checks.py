@@ -28,7 +28,11 @@ ENDPOINTS = [
     ("stock_codes", "GET", "/api/stock-codes"),
     ("etf_codes", "GET", "/api/etf-codes"),
     ("server_status", "GET", "/api/server-status"),
-    ("health", "GET", "/api/health"),
+    # §2.3.3: 增强版 /api/health (返回 status/time/uptime_seconds/gbbq_cache_size/goroutines/memory_mb)
+    # 已切到标准信封 {code,message,data}; 老格式 `{"status":..,"time":..}` 不再保留
+    ("health_enhanced", "GET", "/api/health"),
+    # §2.3.4: 新增 /api/ready (返回 ready/uptime_seconds), 与 health 区别语义
+    ("ready", "GET", "/api/ready"),
     ("etf_list", "GET", "/api/etf?exchange=sh&limit=10"),
     ("trade_history", "GET", "/api/trade-history?code=000001&date=20241108&start=0&count=200"),
     ("trade_history_full", "GET", "/api/trade-history/full?code=000001&start_date=2024-10-01&end_date=2024-10-08&limit=500"),
