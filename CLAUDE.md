@@ -155,6 +155,8 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/kline-history-tdx?code=&type=&start_date=&end_date=` - 走通达信原始(不复权)数据;`Amount` 字段有真实值,除权日跳空
   - `GET /api/kline-history-ths?code=&type=&start_date=&end_date=` - `/api/kline-history` 的显式命名别名,语义一致(同花顺前复权)
   - `GET /api/market-snapshot` - 全市场 5300+ 只股票当日 OHLCV 断面(`client.GetDaySnapshot`,**同步阻塞** 4-15 分钟,客户端要 `curl -m 900`);`tdx-api` 纯中转,不复权/不计算/不入库
+  - `GET /api/health` - 进程级健康检查(PLAN_v2 §2.3.3 增强版):返回 `status` / `time`(unix 秒) / `uptime_seconds` / `gbbq_cache_size` / `goroutines` / `memory_mb`;已切到标准信封,给 docker healthcheck / k8s liveness 用
+  - `GET /api/ready` - 就绪检查(PLAN_v2 §2.3.4 新增):返回 `{ready:true, uptime_seconds}`;gbbq 缓存是否为空不再阻塞 ready,给 k8s readiness probe / 反向代理 upstream 用
   - 所有上述端点共享 `parseKlineDateRange` / `inDateRange` 辅助函数(`web/server_api_extended.go`)
 
 - **Tasks** (`web/tasks.go`): in-memory only, not persisted. Each task has a `context.CancelFunc`; cancellation sets status to `cancelled` and ends the task. Test scripts cancel tasks on exit.
@@ -166,6 +168,21 @@ extend/                   ← higher-level utilities built on tdx
 ## Docker
 
 Multi-stage build with 国内镜像 sources (Alpine + Go proxy both pointed at Aliyun). Builds inside `web/` (`go build -o ../stock-web .`) then copies the binary + `web/static/` to a non-root `appuser` Alpine image. Healthcheck hits `/api/health` via `wget --spider`. `TZ=Asia/Shanghai` is set in both image and compose file — keep this; the protocol date math assumes Shanghai.
+
+**PLAN_v2 §2 落地后的生产化要点**：
+
+- 版本固定：`golang:1.26-alpine`（构建）/ `alpine:3.20`（运行）。`latest` 不可控，某天升级可能破坏兼容；1.22 缺 `time.DateOnly` 等新特性。
+- 构建缓存优化：`Dockerfile` 拆成两层——第一层只 COPY `go.mod`/`go.sum` + `go mod download`；第二层 COPY 源码 + 编译。源码改动不破坏 go mod 下载层。
+- 权限收敛：用 `COPY --chown=appuser:appuser ...` 替代后置 `chown -R /app`（仅 `/app/data` 仍需 chown，因为是 RUN mkdir 创建的）。
+- 镜像可独立 tag：`image: tdx-stock-web:${VERSION:-latest}`，配合 `VERSION=v1.2.3 docker-compose build` 支持版本回滚。
+- 端口可配置：`ports: "${HOST_PORT:-8080}:8080"` + `environment: PORT=8080`（与 `web/server.go` 的 `PORT` env var 配套）。
+- 资源限制：`deploy.resources.limits: { cpus: '2.0', memory: 1G }`——防止 OOM 拖垮宿主机。
+- 日志轮转：`logging: { driver: json-file, options: { max-size: '10m', max-file: '3' } }`——防止容器日志把磁盘吃满。
+- 健康检查：`HEALTHCHECK` 保留 `start-period=600s` 兜底（gbbq 按需拉取后实际冷启动秒级，但 codes/workday 仍要从 TDX 拉一次）。
+
+**健康/就绪端点**：
+- `GET /api/health`（已增强）— 进程级健康 + 运行时指标：`status` / `time`（unix 秒，不再写死）/ `uptime_seconds` / `gbbq_cache_size` / `goroutines` / `memory_mb`（MB）。已切到标准信封 `{code,message,data}`，老格式 `{"status":..,"time":..}` 不再保留。
+- `GET /api/ready`（新增）— 就绪检查，返回 `{ready:true, uptime_seconds}`。语义：服务可接收 HTTP 请求即可。gbbq 缓存是否为空不再阻塞 ready（缓存空时 `/api/turnover` 等端点仍 200，由调用方按需 `POST /api/gbbq/refresh`）。
 
 ## Common pitfalls
 

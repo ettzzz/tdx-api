@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -940,12 +941,33 @@ func handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // 健康检查
+// 返回进程级健康状态 + 关键运行时指标, 用于 docker healthcheck / k8s liveness probe
+// 字段:
+//   - status:        固定 "healthy" (只要进程能响应就 200)
+//   - time:          当前 unix 时间戳 (秒), 不再是写死的 1730617200
+//   - uptime_seconds: 进程启动至今的秒数, 与 /api/ready 同一基准
+//   - gbbq_cache_size: gbbq 内存缓存中的股票数 (0 表示尚未拉过, 正常冷启动状态)
+//   - goroutines:    当前 goroutine 数, 用来辅助观察是否有泄漏
+//   - memory_mb:     当前堆分配内存 (Alloc, MB), 粗略指标
+// 注: 已切到标准响应信封 (code/message/data), 老格式 `{"status":..,"time":..}` 不再保留.
+//     历史冒烟脚本 run_api_checks.py 通过 `data.code==0` 判定, 不受影响.
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "healthy",
-		"time":   fmt.Sprintf("%d", 1730617200),
+	gbbqSize := 0
+	if gbbq != nil {
+		gbbqSize = len(gbbq.All())
+	}
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	memMB := memStats.Alloc / 1024 / 1024
+
+	successResponse(w, map[string]interface{}{
+		"status":         "healthy",
+		"time":           time.Now().Unix(),
+		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+		"gbbq_cache_size": gbbqSize,
+		"goroutines":     runtime.NumGoroutine(),
+		"memory_mb":      memMB,
 	})
 }
 

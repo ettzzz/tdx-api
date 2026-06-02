@@ -21,6 +21,8 @@ var (
 	manager     *tdx.Manage
 	gbbq        *tdx.Gbbq
 	taskManager = NewTaskManager()
+	// startedAt 进程启动时间, 用于 /api/ready 与 /api/health 计算 uptime
+	startedAt = time.Now()
 )
 
 func init() {
@@ -674,6 +676,20 @@ func splitCodes(param string) []string {
 	return result
 }
 
+// handleReady 就绪检查 (PLAN_v2 §2.3.4)
+// 语义: "服务可以接收 HTTP 请求" — 与 /api/health 的差异:
+//   - /api/health: 进程级健康检查, 给 docker healthcheck / k8s liveness 用
+//   - /api/ready:  就绪检查, 给 k8s readiness probe / 反向代理 upstream 用
+// §3 之后, gbbq 缓存按需拉取, 启动时不再阻塞; 因此 ready 与启动时间挂钩即可.
+// 注: gbbq 缓存是否为空不再阻塞 ready — 缓存空时 /api/turnover 等端点仍会 200,
+//     调用方按需 POST /api/gbbq/refresh 触发全量 / 单只拉取.
+func handleReady(w http.ResponseWriter, r *http.Request) {
+	successResponse(w, map[string]interface{}{
+		"ready":          true,
+		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+	})
+}
+
 func getMinuteWithFallback(code, date string) (*protocol.MinuteResp, string, error) {
 	target := strings.TrimSpace(date)
 	if target == "" {
@@ -750,6 +766,7 @@ func main() {
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
 	http.HandleFunc("/api/server-status", handleGetServerStatus)
 	http.HandleFunc("/api/health", handleHealthCheck)
+	http.HandleFunc("/api/ready", handleReady)
 	http.HandleFunc("/api/etf", handleGetETFList)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
 	http.HandleFunc("/api/trade-history/full", handleGetTradeHistoryFull)

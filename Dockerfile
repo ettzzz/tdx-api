@@ -1,6 +1,7 @@
 # 多阶段构建 - 第一阶段：构建
 # 使用官方镜像（如果国内拉取慢，可以配置docker daemon的registry-mirrors）
-FROM golang:1.22-alpine AS builder
+# 固定 Go 版本 (1.22 缺 time.DateOnly 等新特性; latest 不可控)
+FROM golang:1.26-alpine AS builder
 
 # 替换Alpine镜像源为阿里云
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
@@ -16,18 +17,20 @@ ENV GO111MODULE=on \
     GOOS=linux \
     GOARCH=amd64
 
-# 复制 Go 模块文件
+# ---- 第 1 层: 仅 Go 模块清单 (提升 build cache 命中率) ----
+# 这一层只依赖 go.mod / go.sum, 源码改动不会让 go mod 下载重跑
 COPY go.mod go.sum ./
 RUN go mod download
 
-# 复制整个项目的源代码
+# ---- 第 2 层: 源码 + 编译 ----
 COPY . .
 
 # 在子 shell 中编译，避免模块路径混淆问题
 RUN go mod tidy && (cd web && go build -ldflags="-s -w" -o ../stock-web .)
 
 # 多阶段构建 - 第二阶段：运行
-FROM alpine:latest
+# 固定 Alpine 小版本 (latest 可能某天 glibc 升级破坏兼容)
+FROM alpine:3.20
 
 # 替换Alpine镜像源为阿里云，安装必要的运行时依赖
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
@@ -45,20 +48,18 @@ WORKDIR /app
 
 # ===================================================================
 # 【语法修正】
-# 从构建阶段复制编译好的二进制文件
-COPY --from=builder /app/stock-web .
+# 从构建阶段复制编译好的二进制文件 (--chown 避免后续 chown -R 整个 /app)
+COPY --from=builder --chown=appuser:appuser /app/stock-web .
 # ===================================================================
 
 # ===================================================================
 # 【语法修正】
-# 复制静态文件
-COPY --from=builder /app/web/static ./static
+# 复制静态文件 (--chown 同样避免 root 操作)
+COPY --from=builder --chown=appuser:appuser /app/web/static ./static
 # ===================================================================
 
-# 更改文件所有者 (含 /app/data 供 sqlite 持久化, gbbq.db 写入需要)
-RUN chown -R appuser:appuser /app
-
-# 预创建数据目录, 确保 appuser 有写权限 (gbbq.db / codes.db / workday.db)
+# 预创建数据目录 (codes.db / workday.db / gbbq.db 持久化),
+# 由 appuser 持有, 避免后续 chown -R
 RUN mkdir -p /app/data/database && chown -R appuser:appuser /app/data
 
 # 切换到非root用户
@@ -68,7 +69,8 @@ USER appuser
 EXPOSE 8080
 
 # 健康检查
-# start-period=600s: 首次启动 gbbq.Update() 会同步阻塞数分钟拉 6000+ 股票, healthcheck 需要等待
+# start-period=600s 保留: 即使 gbbq 按需拉取, codes/workday 启动时仍需从 TDX 拉,
+# 600s 缓冲期可以保证健康检查不误报 unhealthy (冷启动几秒完成但留余量更稳)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=600s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
 

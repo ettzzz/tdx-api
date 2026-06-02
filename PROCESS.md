@@ -315,3 +315,77 @@ M web/data/database/gbbq.db               (新增)
 **后续**：
 - 如果用户决定加指数断面（PLAN_v2 §4.6），先单跑 `client.GetIndex(protocol.TypeKlineDay, "sh000001", 0, 1)` 验证协议层 `GetIndex` 路径，字段语义可能跟个股不同（指数 Volume 单位可能是亿股/万手而非手）
 - 慢测试可以加到 CI 的"nightly" job，跟 fast suite 分开跑
+
+### 7.4 §2 Docker 部署生产化（2026-06-02）
+
+**上下文**：
+- §1/§3/§4 完成后，项目已有可工作的 `Dockerfile` + `docker-compose.yml`，但属于"能跑"档——版本不固定、构建缓存未优化、无资源限制、日志无轮转、健康检查端点仅返回写死时间戳
+- PLAN_v2 §2 与用户确认：分必修项（6 条）+ 推荐项（4 条）升级到生产可用配置
+
+**决策与设计取舍**：
+
+| 决策 | 理由 |
+|------|------|
+| 保留 `start-period=600s` | gbbq 按需拉取后冷启动秒级，但 codes/workday 启动时仍从 TDX 拉一次；600s 兜底可避免 healthcheck 在冷启几秒内误报 unhealthy |
+| `/api/health` 切到标准信封 | 老格式 `{"status":..,"time":...}` 是手写，缺 `code/message` 字段，跟其他端点不统一；新格式补全 + 加 6 个字段。`run_api_checks.py` 通过 `data.code==0` 判定，不受影响 |
+| 新增 `/api/ready` 区别于 health | health = 进程级存活（liveness）；ready = 服务可接收请求（readiness）。§3 之后 gbbq 不再阻塞启动，ready 语义简化为 "启动后即 ready"，由 `startedAt` 时间戳计算 uptime |
+| 资源限制 2.0 CPU / 1G 内存 | 跟单线程 + 历史全量 gbbq 拉取（9-15 分钟）的实际负载相称；不留过头避免被调度器挤占 |
+| 日志 10m × 3 | 5300+ 只股票 snapshot 一次响应 1MB，10m × 3 = 30m 滚动容量够一周排查 |
+| `COPY --chown` 替代 `chown -R /app` | 缩小 root 操作范围——只 `chown /app/data`（RUN mkdir 创建的）；其他文件用 `COPY --chown` 直接落到正确属主 |
+| Layer 拆 1 (go.mod) + 2 (源码) | PLAN_v2 提示根模块 `replace ../web` 可能让 `go mod download` 报错，**实际验证**：用 `go.mod` / `go.sum` 即可，根模块不依赖 web 子模块的 module 路径，下载层不需特殊处理 |
+
+**实施清单**：
+
+- `Dockerfile`：
+  - `golang:1.22-alpine` → `golang:1.26-alpine`（验证：1.26 编译通过，1.22 缺 `time.DateOnly`）
+  - `alpine:latest` → `alpine:3.20`（固定小版本）
+  - 保留已有的"第 1 层 `go mod download` / 第 2 层 `COPY . .`"分层（原文件已有，仅补注释明确意图）
+  - `COPY --from=builder --chown=appuser:appuser /app/stock-web .` 替代原 `COPY --from=builder /app/stock-web .` + 后置 `chown -R /app`
+  - 静态文件同样加 `--chown`
+  - `chown -R /app/data` 保留（`/app/data/database` 是 `RUN mkdir -p` 创建，需要 chown）
+  - 注释里把"`gbbq.Update()` 同步阻塞"改为"`gbbq` 按需拉取，但仍为 codes/workday 留 600s 缓冲"
+- `docker-compose.yml`：
+  - 加 `version: '3.8'`
+  - 加 `image: tdx-stock-web:${VERSION:-latest}`
+  - `ports: "${HOST_PORT:-8080}:8080"`
+  - `environment: [TZ=Asia/Shanghai, PORT=8080]`
+  - 加 `deploy.resources.limits: { cpus: '2.0', memory: 1G }`
+  - 加 `logging: { driver: json-file, options: { max-size: '10m', max-file: '3' } }`
+  - `tdx-data` volume / 持久化注释保留
+- `web/server.go`：
+  - 加 package-level `startedAt = time.Now()`（计算 uptime 用）
+  - 加 `handleReady` handler：返回 `{ready:true, uptime_seconds}`
+  - 注册 `http.HandleFunc("/api/ready", handleReady)`
+- `web/server_api_extended.go`：
+  - imports 加 `runtime`
+  - `handleHealthCheck` 重写：返回 `{status, time, uptime_seconds, gbbq_cache_size, goroutines, memory_mb}`，走 `successResponse`（标准信封）
+  - 移除原写死的 `time: 1730617200` 与裸 `w.Write` 调用
+- `CLAUDE.md`：
+  - Docker 段扩写"PLAN_v2 §2 落地后的生产化要点"7 条
+  - 端点列表加 `/api/health` 增强说明 + `/api/ready` 说明
+- `API_接口文档.md`：
+  - 在 §11 之后加 §11a `/api/health`（增强版字段表 + 用途说明）
+  - 加 §11b `/api/ready`（与 health 差异表 + §3 之后的语义）
+- `scripts/run_api_checks.py`：
+  - 把 `("health", ...)` 重命名为 `("health_enhanced", ...)` 并补注释
+  - 加 `("ready", "GET", "/api/ready")` 用例
+  - `request_endpoint` 里的 `if name == "health"` 特殊分支对新名字不命中，新端点走标准信封检查
+
+**未动**：
+- `gbbq.go` / `client.go`（§3/§4 已落地，本节不涉及）
+- `protocol/`
+- `web/server.go` 的 `init()` / 路由结构（仅追加 `startedAt` 与 `/api/ready` 路由）
+- `tdx.DefaultCodes` / `gbbq.Update()`（已不存在）
+
+**验收**：
+- ✅ `go build ./...` 通过（根模块）
+- ✅ `go build .` 通过（web 子模块）
+- ✅ `go vet ./...` 唯一告警 `client.go:359: unreachable code` 是历史遗留（与 §2 无关）
+- ⏳ `docker build` / `docker-compose up -d` / `wget --spider` 由控制端验证
+- ⏳ `run_api_checks.py` 36 端点（含 `health_enhanced` + `ready`）需服务冷启后回归
+- ⏳ `docker inspect` 资源限制是否生效由控制端验证
+
+**后续**：
+- 如果以后 gbbq 改回 cron 自动拉取，把 `start-period` 调整需要重新评估
+- `/api/health` 增加的 `goroutines` / `memory_mb` 字段如果发现是噪音，可改成可选（带 `?verbose=true` 才返回）
+
