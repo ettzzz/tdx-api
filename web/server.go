@@ -739,6 +739,7 @@ func main() {
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
 	http.HandleFunc("/api/kline-history", handleGetKlineHistory)
+	http.HandleFunc("/api/kline-history-ths", handleGetKlineHistoryTHS)
 	http.HandleFunc("/api/turnover", handleGetTurnover)
 	http.HandleFunc("/api/gbbq", handleGetGbbq)
 	http.HandleFunc("/api/kline-index-history", handleGetKlineIndexHistory)
@@ -766,6 +767,9 @@ func main() {
 	http.HandleFunc("/api/tasks/", handleTaskOperations)
 
 	port := ":8080"
+	if p := os.Getenv("PORT"); p != "" {
+		port = ":" + p
+	}
 	log.Printf("服务启动成功，访问 http://localhost%s\n", port)
 	log.Fatal(http.ListenAndServe(port, nil))
 }

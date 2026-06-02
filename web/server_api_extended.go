@@ -104,8 +104,9 @@ func handleBatchQuote(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, quotes)
 }
 
-// 获取历史K线（指定日期范围，日/周/月K线使用前复权）
+// 获取历史K线（指定日期范围，数据源为通达信原始不复权数据）
 // 支持 start_date/end_date 按时间区间过滤,缺省时不限制
+// 注意: amount 字段来自 TDX 协议,不为 0; 但 K 线为不复权, 除权除息当日会有跳空
 func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	klineType := r.URL.Query().Get("type")
@@ -123,6 +124,7 @@ func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var resp *protocol.KlineResp
+	var qerr error
 
 	switch klineType {
 	case "minute1":
@@ -136,30 +138,90 @@ func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
 	case "hour":
 		resp, _ = client.GetKlineHourAll(code)
 	case "week":
-		// 周K线走前复权日K线再转换
-		resp, err = getQfqKlineDay(code)
-		if err == nil {
+		resp, qerr = client.GetKlineWeekAll(code)
+	case "month":
+		resp, qerr = client.GetKlineMonthAll(code)
+	case "day":
+		fallthrough
+	default:
+		// 日K线直接走 TDX 原始 (不复权)
+		resp, qerr = client.GetKlineDayAll(code)
+	}
+
+	if resp == nil || len(resp.List) == 0 {
+		msg := "获取K线失败"
+		if qerr != nil {
+			msg = fmt.Sprintf("获取K线失败: %v", qerr)
+		}
+		errorResponse(w, msg)
+		return
+	}
+
+	// 日期过滤
+	filtered := make([]*protocol.Kline, 0, len(resp.List))
+	for _, k := range resp.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		filtered = append(filtered, k)
+	}
+	resp.List = filtered
+	resp.Count = uint16(len(filtered))
+
+	successResponse(w, resp)
+}
+
+// handleGetKlineHistoryTHS 获取历史K线 (同花顺前复权)
+// 行为与改造前的 /api/kline-history 一致: 日/周/月K线走同花顺前复权
+// 用于需要看到连贯复权曲线的场景 (如长期回测、显示连续价格)
+// 注意: amount 字段同花顺不返回,恒为 0
+func handleGetKlineHistoryTHS(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	klineType := r.URL.Query().Get("type")
+
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	var resp *protocol.KlineResp
+	var qerr error
+
+	switch klineType {
+	case "week":
+		resp, qerr = getQfqKlineDay(code)
+		if err == nil && resp != nil {
 			resp = convertToWeekKline(resp)
 		}
 	case "month":
-		// 月K线走前复权日K线再转换
-		resp, err = getQfqKlineDay(code)
-		if err == nil {
+		resp, qerr = getQfqKlineDay(code)
+		if err == nil && resp != nil {
 			resp = convertToMonthKline(resp)
 		}
 	case "day":
 		fallthrough
 	default:
-		// 日K线使用前复权
-		resp, err = getQfqKlineDay(code)
+		resp, qerr = getQfqKlineDay(code)
 	}
 
-	if resp == nil {
-		errorResponse(w, "获取K线失败")
+	if resp == nil || len(resp.List) == 0 {
+		msg := "获取K线失败"
+		if qerr != nil {
+			msg = fmt.Sprintf("获取K线失败: %v", qerr)
+		}
+		errorResponse(w, msg)
 		return
 	}
 
-	// 日期过滤
 	filtered := make([]*protocol.Kline, 0, len(resp.List))
 	for _, k := range resp.List {
 		if k == nil {

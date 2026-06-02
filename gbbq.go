@@ -215,6 +215,37 @@ func (this *Gbbq) GetTurnover(code string, t time.Time, volume int64) float64 {
 	return x.Turnover(volume)
 }
 
+// FetchOne 从 TDX 拉取单只股票的 gbbq 记录, 追加到 db 与内存 map。
+// 主要用于临时补拉, 不影响 cron 自动更新。
+// 返回该股票最新的记录数。
+func (this *Gbbq) FetchOne(code string) (int, error) {
+	fullCode := protocol.AddPrefix(code)
+	resp, err := this.c.GetGbbq(fullCode)
+	if err != nil {
+		return 0, err
+	}
+	// 写 db (只删该 code 的旧记录, 再插入新的, 事务化)
+	if err := NewSessionFunc(this.db, func(session *xorm.Session) error {
+		if _, err := session.Where("code=?", fullCode).Delete(new(protocol.Gbbq)); err != nil {
+			return err
+		}
+		for _, v := range resp.List {
+			if _, err := session.Insert(v); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	// 刷新内存 map: 删旧加新
+	this.mu.Lock()
+	delete(this.m, fullCode)
+	this.m[fullCode] = resp.List
+	this.mu.Unlock()
+	return len(resp.List), nil
+}
+
 // Update 触发一次完整更新
 // 流程:从 db 加载旧数据 -> 检查 Updated 节点 -> 必要时从 TDX 拉取 -> 写回 db -> 刷新内存
 func (this *Gbbq) Update() error {

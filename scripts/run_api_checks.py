@@ -1,10 +1,11 @@
 import json
+import os
 import sys
 from typing import Dict, List, Optional
 
 import requests
 
-BASE_URL = "http://127.0.0.1:8080"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080")
 
 ENDPOINTS = [
     ("quote", "GET", "/api/quote?code=000001"),
@@ -38,6 +39,7 @@ ENDPOINTS = [
     ("gbbq", "GET", "/api/gbbq?code=000001&start_date=20240101&end_date=20240131"),
     ("kline_index_history", "GET", "/api/kline-index-history?code=sh000001&start_date=20240101&end_date=20240131"),
     ("kline_history_dated", "GET", "/api/kline-history?code=000001&type=day&start_date=20240101&end_date=20240131"),
+    ("kline_history_ths_dated", "GET", "/api/kline-history-ths?code=000001&type=day&start_date=20240101&end_date=20240131"),
 ]
 
 
