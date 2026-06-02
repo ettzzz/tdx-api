@@ -739,6 +739,32 @@ func (this *Client) GetKlineDayAll(code string) (*protocol.KlineResp, error) {
 	return this.GetKlineAll(protocol.TypeKlineDay, code)
 }
 
+// GetDaySnapshot 拉取一组股票"当天"日 K (count=1)
+// 单线程串行, 适合每天 16:00 一次性入库
+// 预计耗时: 5300+ 只 × ~50ms ≈ 4-15 分钟 (取决于 TDX 限流)
+// 失败模式: 宽松, 单只失败 logs.Warnf 后 continue
+// 返回: code -> Kline; 失败的 code 不在 map 中, 由调用方按入参 diff
+// 适用: 量化系统每天 16:00 调一次, 把全市场 5300+ 只的当日 OHLCV 入 MySQL
+func (this *Client) GetDaySnapshot(codes []string) (map[string]*protocol.Kline, error) {
+	result := make(map[string]*protocol.Kline, len(codes))
+	var firstErr error
+	for i, code := range codes {
+		resp, err := this.GetKline(protocol.TypeKlineDay, code, 0, 1)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("code %s: %w", code, err)
+			}
+			logs.Warnf("拉取 %s 快照失败: %v (%d/%d)", code, err, i, len(codes))
+			continue
+		}
+		if len(resp.List) == 0 {
+			continue
+		}
+		result[code] = resp.List[0]
+	}
+	return result, firstErr
+}
+
 // GetGbbq 获取单只股票 gbbq (股本变迁 + 除权除息)
 func (this *Client) GetGbbq(code string) (*protocol.GbbqResp, error) {
 	code = protocol.AddPrefix(code)

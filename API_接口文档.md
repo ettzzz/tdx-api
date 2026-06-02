@@ -520,6 +520,95 @@ GET /api/kline-history-tdx?code=000001&type=day&start_date=20241001&end_date=202
 
 ---
 
+### 9c. 全市场当日 K 线断面（v2-§4）
+
+**接口**: `GET /api/market-snapshot`
+
+**描述**: 一次性拉取**全市场 5300+ 只 A 股**"当天"日 K 线断面（OHLCV + 昨收 + 涨跌幅），用于量化系统每天 16:00 后**一次性入库**到自有 MySQL。**单线程串行**，预计耗时 **4-15 分钟**（受 TDX 限流影响），HTTP 客户端需设大超时（`curl -m 900`）。tdx-api 仅做数据中转，**不复权、不计算衍生字段、不入库**。
+
+**使用场景**：
+- 量化选股 / 回测：每天 16:00 调用一次，把全市场 5300+ 只的当日 OHLCV 一次性拉走
+- 跨日数据回填：某日漏跑，可重跑整个 `market-snapshot`（用幂等的方式覆盖 MySQL）
+
+**请求参数**: 无
+
+**调用时序**：
+- 推荐：**每个交易日 16:00 之后**（避开 15:00 收盘数据回填期）
+- 非交易日调用：TDX 返回上一个交易日数据（**这是 TDX 协议行为，不是 bug**）
+
+**响应结构**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "date": "2026-06-02",
+    "count": 5300,
+    "list": [
+      {
+        "code":        "sh600000",
+        "open":        12340,
+        "high":        12500,
+        "low":         12280,
+        "close":       12450,
+        "last_close":  12400,
+        "volume":      1234567,
+        "change_pct":  0.40
+      }
+    ]
+  }
+}
+```
+
+**字段来源**（对照 `protocol/model_kline.go:41 Kline`）:
+
+| 字段 | 数据源 | 单位 | 备注 |
+|------|--------|------|------|
+| `code` | 入参 | - | 带前缀小写,如 `sh600000` |
+| `open`/`high`/`low`/`close` | `Kline.Open`/`High`/`Low`/`Close` | 厘 | tdx-api 不换算,如需元为单位则 ÷1000 |
+| `last_close` | `Kline.Last` | 厘 | 昨收 |
+| `volume` | `Kline.Volume` | 手 | 协议原生,如需股为单位则 ×100 |
+| `change_pct` | `Kline.RiseRate()` | % | 协议层原生,已是百分比 |
+| `date` | `time.Now().Format("2006-01-02")` | - | handler 调用当天的本地日期 |
+| `count` | `len(list)` | - | 成功返回的股票数(失败的 stock 不在 list 中) |
+
+**响应字段**（最小化, 8 个 per item）：
+- 不返回 `name`、`date`(K.Time)、`change`(可算术衍生)、`amount`(用户不需要)
+
+**请求示例**:
+```
+GET /api/market-snapshot
+```
+
+**性能与稳定性**：
+- 耗时: 5300+ × ~50ms = 4-15 分钟（受 TDX 限流影响）
+- 响应体积: 5300+ × ~200B ≈ 1MB
+- 客户端超时: `curl -m 900`（15 分钟）
+- 失败模式: **宽松**——单只股票拉取失败 `logs.Warnf` 后 continue,该只股票不在响应 list 中;其他股票正常返回
+- 重连: handler 不做断点续传,失败请重跑(每日一次,重跑成本可接受)
+- 单连接断开: TDX 单连接断开后,后续所有请求失败 → 重跑整个 endpoint
+
+**边界与坑**:
+
+| 情况 | 行为 | 备注 |
+|------|------|------|
+| 停牌股票 | K 线存在,字段可能为 0 | 量化系统入库时自己处理 |
+| 非交易日调用 | TDX 返回上一个交易日数据 | 用户每天 16:00 工作日调,不会踩到 |
+| 新上市股票 | TDX 返回最近一个交易日数据 | 正常 |
+| 退市股票 | 不会出现在 `GetStocks()` 里 | codes 缓存会过滤 |
+| 单只拉取失败 | `logs.Warnf` 记录,该只不入响应 | 宽松模式 |
+| 指数 / 板块 | **不在响应中** | `GetStocks()` 通过 `protocol.IsStock()` 过滤不含指数;指数断面是 PLAN_v2 §4.6 标记的扩展,未在本节实施 |
+
+**冒烟测试**:
+```bash
+# 默认不跑(slow=True)
+python3 scripts/run_api_checks.py
+# 跑慢测试
+python3 scripts/run_api_checks.py --slow
+```
+
+---
+
 ### 9.1 获取指数 / 板块历史 K 线
 
 **接口**: `GET /api/kline-index-history`

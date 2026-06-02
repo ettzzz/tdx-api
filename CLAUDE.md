@@ -154,6 +154,7 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/kline-history?code=&type=&start_date=&end_date=` - **修复了日期范围过滤,日/周/月走同花顺前复权(原始语义)**,**仅服务个股**;`Amount` 恒为 0,价格曲线连续无缝
   - `GET /api/kline-history-tdx?code=&type=&start_date=&end_date=` - 走通达信原始(不复权)数据;`Amount` 字段有真实值,除权日跳空
   - `GET /api/kline-history-ths?code=&type=&start_date=&end_date=` - `/api/kline-history` 的显式命名别名,语义一致(同花顺前复权)
+  - `GET /api/market-snapshot` - 全市场 5300+ 只股票当日 OHLCV 断面(`client.GetDaySnapshot`,**同步阻塞** 4-15 分钟,客户端要 `curl -m 900`);`tdx-api` 纯中转,不复权/不计算/不入库
   - 所有上述端点共享 `parseKlineDateRange` / `inDateRange` 辅助函数(`web/server_api_extended.go`)
 
 - **Tasks** (`web/tasks.go`): in-memory only, not persisted. Each task has a `context.CancelFunc`; cancellation sets status to `cancelled` and ends the task. Test scripts cancel tasks on exit.
@@ -174,3 +175,4 @@ Multi-stage build with 国内镜像 sources (Alpine + Go proxy both pointed at A
 - **TDX servers change IPs.** `hosts.go` was last updated 2024-11-30; servers go offline without notice. `FastHosts` is the resilience layer, not a permanent server list.
 - **Single client per connection.** Don't spawn many goroutines hammering one `*Client`; use the `Pool` (via `Manage`) instead. Concurrent calls on one client serialize behind a 2s gate.
 - **`gbbq` 改为按需拉取(PLAN_v2 §3)** — `NewGbbq` 不再启动 cron 也不再调用 `Update()`,空缓存冷启动是秒级。需要数据时调 `POST /api/gbbq/refresh`(单只秒级,全量约 9-15 分钟)。`/api/turnover` 在 gbbq 缓存空时返回 turnover=0,**不会**自动补拉;查询路径与更新路径已解耦。
+- **`/api/market-snapshot` 是耗时长端点(PLAN_v2 §4)** — 单线程串行拉全市场 5300+ 只,**同步阻塞 4-15 分钟**。HTTP 客户端必须设大超时(`curl -m 900`)。响应体积 ≈ 1MB(5300+ × 200B)。失败模式宽松(单只失败不阻断)。建议调用时序:每个交易日 16:00 之后(避开 15:00 收盘数据回填期)。`run_api_checks.py` 把这个端点标为 `slow=True`,默认不跑,需加 `--slow` 启用。

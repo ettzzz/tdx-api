@@ -745,6 +745,7 @@ func main() {
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
+	http.HandleFunc("/api/market-snapshot", handleMarketSnapshot)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
 	http.HandleFunc("/api/server-status", handleGetServerStatus)

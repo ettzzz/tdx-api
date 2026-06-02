@@ -263,3 +263,55 @@ M web/data/database/gbbq.db               (新增)
 - ✅ `go vet ./...` 根模块：exit 0（唯一告警 `client.go:359: unreachable code` 是 §1 已有）
 - ✅ orphan 检查：`grep -rn 'DefaultGbbqSpec\|WithGbbqSpec\|WithGbbqRetry\|gbbq\.Update' --include='*.go'` 0 命中
 - ⏳ `run_api_checks.py` 34 端点（+gbbq_refresh）待服务冷启后回归
+
+---
+
+### 7.3 §4 /api/market-snapshot 全市场当日断面（2026-06-02）
+
+**上下文**：
+- 用户的量化系统每天 16:00 需要把全市场 5300+ 只 A 股的当日 OHLCV 一次性入库到 MySQL
+- 之前用东方财富要 1.5 小时；用 TDX 单线程串行预期 4-15 分钟
+- 决策定稿（PLAN_v2 §4.2 D1-D12）：单线程 + count=1 + 不复权 + 不带 name/date + 宽松失败 + 16:00 推荐 + 不入库
+
+**实施**：
+
+- `client.go`：
+  - 新增 `Client.GetDaySnapshot(codes []string) (map[string]*protocol.Kline, error)`：单线程串行调 `GetKline(TypeKlineDay, code, 0, 1)`，单只失败 `logs.Warnf` 后 continue，返回 `code -> Kline` map（失败的 code 不在 map 中），第一个错误用 `fmt.Errorf("code %s: %w", code, err)` 包装
+  - 位置：紧跟 `GetKlineDayAll` 之后
+- `web/server.go`：
+  - 注册 `GET /api/market-snapshot` → `handleMarketSnapshot`（在 `/api/market-count` 之后）
+- `web/server_api_extended.go`：
+  - 新增 `handleMarketSnapshot` handler：
+    - 校验 `tdx.DefaultCodes` 已初始化
+    - 调 `client.GetDaySnapshot(tdx.DefaultCodes.GetStocks())`（5300+ 只）
+    - 遍历 codes 顺序，构造 list 元素（8 字段：`code/open/high/low/close/volume/last_close/change_pct`）
+    - `change_pct` 用 `k.RiseRate()` 协议层原生
+    - 响应外层加 `date`（handler 调用当天的本地日期，YYYY-MM-DD）+ `count`（成功返回的股票数）
+    - `err != nil` 时 `log.Printf` 不阻断，继续返回成功的
+  - 注释里说明单位（价格=厘、成交量=手）与设计取舍（count=1 性能关键、宽松失败模式）
+- `API_接口文档.md`：新增 §9c 章节（描述/字段表/调用时序/性能/指数断面扩展点）
+- `CLAUDE.md`：端点列表新增 `/api/market-snapshot` 说明 + pitfalls 段加"耗时长端点"提示
+- `scripts/run_api_checks.py`：
+  - 新增 `--slow` 参数支持（默认不跑 `slow=True` 用例）
+  - 新增 `market_snapshot` 用例：`{"timeout": 900}` + `slow=True`
+  - 4-tuple → 5-tuple 兼容性已处理（运行时按 tuple 长度解析）
+- `PROCESS.md`：本节（§7.3）
+
+**未动**：
+- `protocol/`（不改 model）
+- `gbbq.go`（属 §3）
+- `Dockerfile` / `docker-compose.yml`（属 §2）
+- `updated.go`（属 §3；§4 没用 Updated 机制）
+- 指数断面（PLAN_v2 §4.6 标记为扩展，等下次验证 `GetIndex` 路径）
+
+**验证**：
+- ✅ `go build ./...` 通过（根模块）
+- ✅ `go build .` 通过（web 子模块）
+- ✅ `go vet ./...` 根模块：唯一告警 `client.go:359: unreachable code` 是历史遗留（与 §4 无关）
+- ✅ `scripts/run_api_checks.py` Python 语法校验通过
+- ⏳ `run_api_checks.py` 35 端点（+market_snapshot）需服务冷启后回归；慢测试需 `--slow` 单独跑
+- ⏳ 实际跑通市场快照（4-15 分钟）尚未在本环境验证（TDX 服务器连接 + 网络稳定性是外部条件）
+
+**后续**：
+- 如果用户决定加指数断面（PLAN_v2 §4.6），先单跑 `client.GetIndex(protocol.TypeKlineDay, "sh000001", 0, 1)` 验证协议层 `GetIndex` 路径，字段语义可能跟个股不同（指数 Volume 单位可能是亿股/万手而非手）
+- 慢测试可以加到 CI 的"nightly" job，跟 fast suite 分开跑

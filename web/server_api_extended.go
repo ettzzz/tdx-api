@@ -1581,3 +1581,47 @@ func handleGetKlineIndexHistory(w http.ResponseWriter, r *http.Request) {
 		"list":  list,
 	})
 }
+
+// handleMarketSnapshot 全市场当日 K 线断面
+// 用于: 量化系统每天 16:00 调一次, 拉全市场 5300+ 只 OHLCV 入 MySQL
+// 设计: 最小字段, 单线程, 宽松失败
+// 注意: 此端点耗时长 (10-15 分钟), 客户端要设大超时 (curl -m 900)
+// 字段: code/open/high/low/close/volume/last_close/change_pct
+// - 价格/昨收: 厘 (×0.001 = 元)
+// - 成交量: 手 (×100 = 股)
+// - change_pct: 百分比, 直接由 protocol.Kline.RiseRate() 返回
+// 不返回 name/date/amount/change, 减少响应体积
+func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
+	if tdx.DefaultCodes == nil {
+		errorResponse(w, "代码库未初始化")
+		return
+	}
+	codes := tdx.DefaultCodes.GetStocks() // 5300+ 只
+	snapshots, err := client.GetDaySnapshot(codes)
+	if err != nil {
+		log.Printf("部分股票快照拉取失败: %v", err) // 不阻断,继续返回成功的
+	}
+	list := make([]map[string]any, 0, len(snapshots))
+	today := time.Now().Format("2006-01-02")
+	for _, code := range codes {
+		k, ok := snapshots[code]
+		if !ok {
+			continue
+		}
+		list = append(list, map[string]any{
+			"code":       code,
+			"open":       k.Open,
+			"high":       k.High,
+			"low":        k.Low,
+			"close":      k.Close,
+			"volume":     k.Volume,
+			"last_close": k.Last,
+			"change_pct": k.RiseRate(),
+		})
+	}
+	successResponse(w, map[string]any{
+		"date":  today,
+		"count": len(list),
+		"list":  list,
+	})
+}

@@ -7,6 +7,10 @@ import requests
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8080")
 
+# Endpoints: 3-tuple = (name, method, path)
+#            4-tuple = (name, method, path, extra)
+#            5-tuple = (name, method, path, extra, slow)
+# `slow=True` 表示该用例耗时较长(>30s), 默认不跑; 加 --slow 参数启用
 ENDPOINTS = [
     ("quote", "GET", "/api/quote?code=000001"),
     ("kline_day", "GET", "/api/kline?code=000001&type=day"),
@@ -43,6 +47,9 @@ ENDPOINTS = [
     ("kline_history_dated", "GET", "/api/kline-history?code=000001&type=day&start_date=20240101&end_date=20240131"),
     ("kline_history_tdx_dated", "GET", "/api/kline-history-tdx?code=000001&type=day&start_date=20240101&end_date=20240131"),
     ("kline_history_ths_dated", "GET", "/api/kline-history-ths?code=000001&type=day&start_date=20240101&end_date=20240131"),
+    # §4: 全市场当日 K 断面, 5300+ 只股票单线程串行, 4-15 分钟
+    # 默认不跑(慢测试), 需用 --slow 启用
+    ("market_snapshot", "GET", "/api/market-snapshot", {"timeout": 900}, True),
 ]
 
 
@@ -87,15 +94,28 @@ def extract_metric(payload: Dict) -> Optional[str]:
 
 
 def main() -> int:
+    run_slow = "--slow" in sys.argv
+
     successes: List[str] = []
     failures: List[str] = []
+    skipped: List[str] = []
 
     for item in ENDPOINTS:
+        # 3-tuple: (name, method, path)
+        # 4-tuple: (name, method, path, extra)
+        # 5-tuple: (name, method, path, extra, slow)
+        slow = False
         if len(item) == 3:
             name, method, path = item
             extra = None
-        else:
+        elif len(item) == 4:
             name, method, path, extra = item
+        else:
+            name, method, path, extra, slow = item
+
+        if slow and not run_slow:
+            skipped.append(f"[SKIP] {name} (slow test, pass --slow to run)")
+            continue
 
         try:
             payload = request_endpoint(name, method, path, extra)
@@ -109,12 +129,14 @@ def main() -> int:
         print(line)
     for line in failures:
         print(line)
+    for line in skipped:
+        print(line)
 
     if failures:
-        print(f"\nPassed: {len(successes)} | Failed: {len(failures)}")
+        print(f"\nPassed: {len(successes)} | Failed: {len(failures)} | Skipped: {len(skipped)}")
         return 1
 
-    print(f"\nAll {len(successes)} endpoints passed")
+    print(f"\nAll {len(successes)} endpoints passed (skipped: {len(skipped)})")
     return 0
 
 
