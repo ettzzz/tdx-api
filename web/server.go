@@ -42,11 +42,9 @@ func init() {
 		log.Printf("初始化代码库失败: %v", err)
 	} else {
 		tdx.DefaultCodes = codes
-		if err := tdx.DefaultCodes.Update(); err != nil {
-			log.Printf("更新代码库失败: %v", err)
-		} else {
-			log.Printf("已加载股票代码，共 %d 条", len(tdx.DefaultCodes.Map))
-		}
+		// NewCodesSqlite 内部已自动 Update 一次 (codes.go:78-122, 通过 Updated 节点判断),
+		// 不需要再额外调一次
+		log.Printf("已加载股票代码，共 %d 条", len(tdx.DefaultCodes.Map))
 	}
 
 	manager, err = tdx.NewManage(&tdx.ManageConfig{

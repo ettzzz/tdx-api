@@ -352,19 +352,10 @@ func (this *Client) GetQuote(codes ...string) (protocol.QuotesResp, error) {
 	return quotes, nil
 }
 
-// GetMinute 获取分时数据,todo 解析好像不对,先用历史数据
+// GetMinute 获取当天分时数据(实际走历史分时接口,因协议层 MMinute.Frame 解析有问题)
+// 改用 GetHistoryMinute("今天") 是历史行为,这里保留同款实现并清理掉旧 unreachable code
 func (this *Client) GetMinute(code string) (*protocol.MinuteResp, error) {
 	return this.GetHistoryMinute(time.Now().Format("20060102"), code)
-
-	f, err := protocol.MMinute.Frame(code)
-	if err != nil {
-		return nil, err
-	}
-	result, err := this.SendFrame(f)
-	if err != nil {
-		return nil, err
-	}
-	return result.(*protocol.MinuteResp), nil
 }
 
 // GetHistoryMinute 获取历史分时数据

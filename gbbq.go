@@ -59,8 +59,8 @@ func WithGbbqOption(op ...GbbqOption) GbbqOption {
 
 // NewGbbq 构造 gbbq 管理器
 // 流程:应用 options -> 初始化 client -> 初始化 db -> 同步表结构 -> 加载历史缓存到内存
-// 注意:本函数不再启动 cron 自动更新,也不再触发网络拉取.
-// 数据更新需要调用方显式调用 Refresh(codes),详细见 PLAN_v2 §3.
+// 注意:本函数不触发任何网络拉取(PLAN_v2 §3:启动时不再自动拉取).
+// 数据更新需要调用方显式调用 Refresh(codes).
 func NewGbbq(op ...GbbqOption) (*Gbbq, error) {
 	s := &Gbbq{
 		m: make(map[string][]*protocol.Gbbq),
@@ -104,7 +104,7 @@ func NewGbbq(op ...GbbqOption) (*Gbbq, error) {
 }
 
 // Gbbq 股本变迁/除权除息管理器
-// 内存缓存 code -> []Gbbq; 刷新节奏由调用方通过 Refresh() 触发,后台不再有 cron 自动拉取
+// 内存缓存 code -> []Gbbq; 刷新节奏由调用方通过 Refresh() 触发,后台无自动拉取
 type Gbbq struct {
 	c  *Client
 	db *xorm.Engine
