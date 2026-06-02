@@ -223,3 +223,43 @@ M web/data/database/gbbq.db               (新增)
 - ✅ `go test ./protocol/...` 通过
 - ✅ 路由绑定：kline-history → THS、kline-history-tdx → TDX、kline-history-ths → THS 别名
 - ⏳ `run_api_checks.py` 33 端点全绿（待 §3 修掉 gbbq 启动阻塞后回归）
+
+### 7.2 §3 gbbq 拉取性能重构（2026-06-02）
+
+**上下文**：
+- 上一轮（PLAN.md）首次跑 gbbq 时炸出 9+ 分钟启动阻塞；本轮 PLAN_v2 §3 与用户确认：彻底解耦查询与更新
+- 决策定稿（PLAN_v2 §3.3 D1-D7）：干掉 gbbq 的 cron 自动更新；查询路径不触发更新；失败宽松；一个端点 `POST /api/gbbq/refresh`；codes 缺省=全量；进度只打 log
+
+**实施**（commit 待出）：
+- `gbbq.go`：
+  - 删除 `DefaultGbbqSpec`、`WithGbbqSpec`、`WithGbbqRetry`
+  - 删除 `Gbbq.spec` / `Gbbq.retry` / `Gbbq.updateKey` / `Gbbq.updated` 字段
+  - 删除私有 `update()` 中的"任一失败即整体回滚"逻辑（已用宽松模式：失败 `logs.Warn` + continue）
+  - 删除公开 `Update()` 方法（原 `Update()` 是 cron 入口，已被 `Refresh()` 替代）
+  - 删除 `NewTimer(...)` 调用与 `NewUpdated(...)` 调用
+  - 新增 `Refresh(codes []string) (success []string, failed map[string]error, err error)`：codes 空/缺省 = 全量（回退 `this.codes` → `c.GetStockAll()`）；非空 = 逐只 `FetchOne`
+  - `NewGbbq` 改为只做"建内存 / 建 db / Sync2 / 加载历史缓存到内存"，不再有任何网络/定时器
+  - 保留 `IGbbq` / `FetchOne` / `WithGbbqCodes` / `Get*` 系列方法不变
+- `web/server.go`：
+  - `init()` 中删除 `gbbq.Update()` 同步阻塞
+  - 启动日志改为"gbbq 缓存已初始化（数据按需拉取, 调 POST /api/gbbq/refresh 触发）"
+  - 注册 `POST /api/gbbq/refresh` 路由 → `handleRefreshGbbq`
+- `web/server_api_extended.go`：新增 `handleRefreshGbbq` — 解析 body，调 `gbbq.Refresh`，返回 `{ success_count, failed_count, failed: {code:err}, duration_ms }`
+- `example/GetTurnover/main.go`：文档加注"启动后请调用 Refresh 拉取 gbbq"；main 里显式 `gbbq.Refresh([]string{code})` 拉单只演示
+- `API_接口文档.md`：新增 §9.4 `POST /api/gbbq/refresh` 章节（典型使用流程 + curl 例子）
+- `CLAUDE.md`：端点列表加 `POST /api/gbbq/refresh`；pitfalls 段"gbbq 同步阻塞"改为"按需拉取"说明
+- `scripts/run_api_checks.py`：新增 `gbbq_refresh` 用例（POST 单只 `sh000001`，60s 超时）
+- `updated.go`：注释里 `gbbq.Update()` 改为"任何依赖 Updater 的 Update()"——gbbq 本身不再用 Updated 机制，但 codes/workday 还在用
+
+**未动**：
+- `updated.go` 整体保留（codes.go 9:00:10 + workday.go 9:00:00 仍用 `NewUpdated` 节点机制）
+- `protocol/`、`Dockerfile`、`docker-compose.yml`（属 §2 / §4）
+- `gbbq.db` 数据库文件本身的 `update` 表（schema 保留，无新写入；如果以后要清理可手动 `DROP TABLE update`）
+
+**验收**：
+- ✅ `go build ./...` 通过（根模块）
+- ✅ `go build .` 通过（web 子模块）
+- ✅ `go test ./protocol/...` 通过
+- ✅ `go vet ./...` 根模块：exit 0（唯一告警 `client.go:359: unreachable code` 是 §1 已有）
+- ✅ orphan 检查：`grep -rn 'DefaultGbbqSpec\|WithGbbqSpec\|WithGbbqRetry\|gbbq\.Update' --include='*.go'` 0 命中
+- ⏳ `run_api_checks.py` 34 端点（+gbbq_refresh）待服务冷启后回归

@@ -11,15 +11,6 @@ import (
 	"xorm.io/xorm"
 )
 
-const (
-	// DefaultGbbqSpec gbbq 默认更新 cron 表达式
-	// 工作日 9:00 / 15:00 各更新一次 (与 TDX 复权数据发布节奏对齐)
-	DefaultGbbqSpec = "0 0 9,15 * * 1-5"
-
-	// DefaultRetry gbbq 定时任务单次执行失败时的重试次数
-	DefaultRetry = 3
-)
-
 // IGbbq gbbq 查询对外接口
 // 由 Gbbq 结构体实现,方便替换 mock 或其他实现
 type IGbbq interface {
@@ -30,20 +21,6 @@ type IGbbq interface {
 }
 
 type GbbqOption func(s *Gbbq)
-
-// WithGbbqRetry 设置定时任务失败重试次数
-func WithGbbqRetry(retry int) GbbqOption {
-	return func(s *Gbbq) {
-		s.retry = retry
-	}
-}
-
-// WithGbbqSpec 设置 cron 表达式
-func WithGbbqSpec(spec string) GbbqOption {
-	return func(s *Gbbq) {
-		s.spec = spec
-	}
-}
 
 // WithGbbqDB 注入已准备好的 xorm 引擎
 // 不传则默认在 DefaultDatabaseDir/gbbq.db 创建 sqlite 引擎
@@ -62,7 +39,7 @@ func WithGbbqClient(c *Client) GbbqOption {
 }
 
 // WithGbbqCodes 注入股票代码列表 (优先使用本地 codes 缓存)
-// 不传则回退到 c.GetStockAll() (可能受 TDX 服务器限流影响返回 0)
+// 不传则 Refresh(codes=nil) 时回退到 c.GetStockAll() (可能受 TDX 服务器限流影响返回 0)
 func WithGbbqCodes(codes []string) GbbqOption {
 	return func(s *Gbbq) {
 		s.codes = append([]string(nil), codes...)
@@ -81,13 +58,12 @@ func WithGbbqOption(op ...GbbqOption) GbbqOption {
 }
 
 // NewGbbq 构造 gbbq 管理器
-// 流程:应用 options -> 初始化 client -> 初始化 db -> 同步表结构 -> 启动定时器
+// 流程:应用 options -> 初始化 client -> 初始化 db -> 同步表结构 -> 加载历史缓存到内存
+// 注意:本函数不再启动 cron 自动更新,也不再触发网络拉取.
+// 数据更新需要调用方显式调用 Refresh(codes),详细见 PLAN_v2 §3.
 func NewGbbq(op ...GbbqOption) (*Gbbq, error) {
 	s := &Gbbq{
-		spec:      DefaultGbbqSpec,
-		retry:     DefaultRetry,
-		updateKey: "gbbq",
-		m:         make(map[string][]*protocol.Gbbq),
+		m: make(map[string][]*protocol.Gbbq),
 	}
 	WithGbbqOption(op...)(s)
 
@@ -112,27 +88,26 @@ func NewGbbq(op ...GbbqOption) (*Gbbq, error) {
 		return nil, err
 	}
 
-	// 初始化 Updated (用于判断节点时间是否需要拉取)
-	s.updated, err = NewUpdated(s.db, 9, 0)
-	if err != nil {
-		return nil, err
+	// 加载历史缓存到内存(秒级),为空时直接返回
+	if old, lerr := s.loading(); lerr != nil {
+		return nil, lerr
+	} else if len(old) > 0 {
+		s.sort(old)
+		s.mu.Lock()
+		s.m = old
+		s.mu.Unlock()
+		logs.Infof("gbbq 缓存已加载 %d 只股票历史记录", len(old))
+	} else {
+		logs.Infof("gbbq 缓存为空,数据按需拉取")
 	}
-
-	// 启动定时器(立即执行一次,失败按 retry 重试)
-	err = NewTimer(s.spec, s.retry, s)
-	return s, err
+	return s, nil
 }
 
 // Gbbq 股本变迁/除权除息管理器
-// 内存缓存 code -> []Gbbq,后台定时从 TDX 拉取并写入 sqlite
+// 内存缓存 code -> []Gbbq; 刷新节奏由调用方通过 Refresh() 触发,后台不再有 cron 自动拉取
 type Gbbq struct {
-	spec      string
-	retry     int
-	updateKey string
-
-	c       *Client
-	db      *xorm.Engine
-	updated *Updated
+	c  *Client
+	db *xorm.Engine
 
 	// codes 可选,股票代码列表 (优先使用本地 codes 缓存,避免 TDX 协议限流)
 	codes []string
@@ -215,8 +190,8 @@ func (this *Gbbq) GetTurnover(code string, t time.Time, volume int64) float64 {
 	return x.Turnover(volume)
 }
 
-// FetchOne 从 TDX 拉取单只股票的 gbbq 记录, 追加到 db 与内存 map。
-// 主要用于临时补拉, 不影响 cron 自动更新。
+// FetchOne 从 TDX 拉取单只股票的 gbbq 记录, 写入 db 与内存 map。
+// 主要供 Refresh 内部使用,也允许库使用者主动补拉单只股票。
 // 返回该股票最新的记录数。
 func (this *Gbbq) FetchOne(code string) (int, error) {
 	fullCode := protocol.AddPrefix(code)
@@ -246,38 +221,53 @@ func (this *Gbbq) FetchOne(code string) (int, error) {
 	return len(resp.List), nil
 }
 
-// Update 触发一次完整更新
-// 流程:从 db 加载旧数据 -> 检查 Updated 节点 -> 必要时从 TDX 拉取 -> 写回 db -> 刷新内存
-func (this *Gbbq) Update() error {
-	old, err := this.loading()
-	if err != nil {
-		return err
-	}
-	this.sort(old)
+// Refresh 主动触发 gbbq 更新(替代原 Update).
+// codes: 要刷新的股票代码列表; 支持以下写法:
+//   - 带前缀: "sh600000" / "sz000001"
+//   - 不带前缀: "600000" / "000001"(内部 AddPrefix 补前缀)
+//   - 大小写不敏感
+//
+// 为空/为 nil = 全量(从 this.codes 读,由 WithGbbqCodes 注入;未注入时回退到 c.GetStockAll())
+// 返回值:
+//   - success: 成功刷新的股票代码列表(统一带前缀小写)
+//   - failed:  code -> 错误信息(不阻塞后续股票)
+//   - err:     仅在初始化阶段(GetStockAll 失败等)才返回
+//
+// 注意: 单只股票拉取失败不影响其他股票,符合"宽松模式"语义
+func (this *Gbbq) Refresh(codes []string) (success []string, failed map[string]error, err error) {
+	failed = make(map[string]error)
 
-	this.mu.Lock()
-	this.m = old
-	this.mu.Unlock()
-
-	// Updated 节点判断:已更新过则跳过拉取
-	updated, err := this.updated.Updated(this.updateKey)
-	if err != nil {
-		return err
+	// codes 为空/为 nil 时,回退到 this.codes(由 WithGbbqCodes 注入);都没有再走 GetStockAll
+	if len(codes) == 0 {
+		if len(this.codes) == 0 {
+			listed, gerr := this.c.GetStockAll()
+			if gerr != nil {
+				return nil, failed, gerr
+			}
+			codes = listed
+		} else {
+			codes = this.codes
+		}
 	}
-	if updated {
-		return nil
-	}
 
-	_new, err := this.update()
-	if err != nil {
-		return err
-	}
-	this.sort(_new)
+	total := len(codes)
+	logs.Infof("[gbbq.Refresh] 开始拉取 %d 只股票的 gbbq 数据", total)
 
-	this.mu.Lock()
-	this.m = _new
-	this.mu.Unlock()
-	return nil
+	success = make([]string, 0, total)
+	for i, code := range codes {
+		fullCode := protocol.AddPrefix(code)
+		if _, qerr := this.FetchOne(fullCode); qerr != nil {
+			logs.Warnf("[gbbq.Refresh] 拉取 %s 失败: %v (已拉取 %d/%d)", fullCode, qerr, i, total)
+			failed[fullCode] = qerr
+			continue
+		}
+		success = append(success, fullCode)
+		if (i+1)%100 == 0 || i+1 == total {
+			logs.Infof("[gbbq.Refresh] 进度 %d/%d (成功=%d, 失败=%d)", i+1, total, len(success), len(failed))
+		}
+	}
+	logs.Infof("[gbbq.Refresh] 完成, 共 %d 只 (成功=%d, 失败=%d)", total, len(success), len(failed))
+	return success, failed, nil
 }
 
 // sort 按时间升序排序每个股票的 gbbq 列表
@@ -300,50 +290,4 @@ func (this *Gbbq) loading() (map[string][]*protocol.Gbbq, error) {
 		m[v.Code] = append(m[v.Code], v)
 	}
 	return m, nil
-}
-
-// update 从 TDX 拉取全市场 gbbq,事务化覆盖写回 sqlite,更新 Updated 时间戳
-func (this *Gbbq) update() (map[string][]*protocol.Gbbq, error) {
-	// 优先用本地 codes 缓存 (避免 TDX 协议限流返回 0)
-	codes := this.codes
-	var err error
-	if len(codes) == 0 {
-		codes, err = this.c.GetStockAll()
-		if err != nil {
-			return nil, err
-		}
-	}
-	logs.Infof("开始拉取 %d 只股票的 gbbq 数据", len(codes))
-	gbbqs := map[string][]*protocol.Gbbq{}
-	var resp *protocol.GbbqResp
-	for i, code := range codes {
-		resp, err = this.c.GetGbbq(code)
-		if err != nil {
-			logs.Warnf("拉取 %s 失败: %v (已拉取 %d/%d)", code, err, i, len(codes))
-			return nil, err
-		}
-		gbbqs[code] = resp.List
-	}
-	logs.Infof("gbbq 拉取完成,共 %d 只股票", len(gbbqs))
-	err = NewSessionFunc(this.db, func(session *xorm.Session) error {
-		// 全量替换:先清空再批量插入
-		if _, err = session.Where("1=1").Delete(new(protocol.Gbbq)); err != nil {
-			return err
-		}
-		for _, ls := range gbbqs {
-			for _, v := range ls {
-				if _, err = session.Insert(v); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err = this.updated.Update(this.updateKey); err != nil {
-		return gbbqs, err
-	}
-	return gbbqs, nil
 }

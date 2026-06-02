@@ -670,6 +670,72 @@ GET /api/gbbq?code=000001&start_date=20240101&end_date=20240131
 
 ---
 
+### 9.4 主动刷新 gbbq 缓存
+
+**接口**: `POST /api/gbbq/refresh`
+
+**描述**: 主动触发 gbbq（股本变迁 / 除权除息）数据拉取。空缓存冷启动时服务不会自动拉取，需要调用方显式调此端点。**同步阻塞**，全量 11000+ 只预计 9-15 分钟（取决于 TDX 限流），HTTP 客户端需设置大超时（`curl -m 900`）。
+
+**请求参数（请求体 JSON，可为空）**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| codes | array | 否 | 要刷新的股票代码列表（支持 `sh600000` / `600000` 两种写法，大小写不敏感）。**缺省 / 空数组 / null = 全量**（从本地 codes 缓存读） |
+
+**请求示例**:
+```
+# 全量刷新
+curl -X POST http://127.0.0.1:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# 刷单只
+curl -X POST http://127.0.0.1:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"codes":["sh600000","sz000001"]}'
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "success_count": 5300,
+    "failed_count": 0,
+    "failed": {},
+    "duration_ms": 482301
+  }
+}
+```
+
+**数据说明**:
+- `success_count` - 成功刷新的股票数
+- `failed_count` - 失败的股票数
+- `failed` - `code -> error` 映射，**只包含失败的股票**（成功的 list 不返回，调用方按入参自己 diff）
+- `duration_ms` - 整个 refresh 耗时（毫秒）
+- **宽松失败模式**：单只股票拉取失败不影响其他股票，返回值会按 `success` / `failed` 分别统计
+- 启动时 `gbbq` 缓存为空时，`/api/turnover` 返回的换手率均为 0；调本端点拉完数据后 `/api/turnover` 立即有结果
+
+**典型使用流程**:
+```bash
+# 1. 启动服务（gbbq 缓存空, 但服务已就绪）
+./stock-web &
+
+# 2. 先拉关注的若干只
+curl -X POST http://127.0.0.1:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"codes":["sh000688","sh688799","sz300620"]}'
+
+# 3. 现在 /api/turnover /api/gbbq 接口能查到这 N 只的数据
+
+# 4. 隔天（或每周）做一次全量
+curl -X POST http://127.0.0.1:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
 ### 10. 获取指数数据
 
 **接口**: `GET /api/index`

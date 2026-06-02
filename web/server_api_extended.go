@@ -1437,6 +1437,53 @@ func handleGetTurnover(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRefreshGbbq 主动触发 gbbq 数据拉取
+// POST /api/gbbq/refresh
+// 请求体: {"codes": ["sh600000", ...]}  // 可选, 缺省 = 全量
+// 响应: { success_count, failed_count, failed: {code: err}, duration_ms }
+// 注意: 同步阻塞, 全量 11000+ 只约 9 分钟, 客户端需要 -m 600 以上的超时
+func handleRefreshGbbq(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, "只支持 POST 请求")
+		return
+	}
+	if gbbq == nil {
+		errorResponse(w, "gbbq 管理器未初始化")
+		return
+	}
+
+	// 请求体可能为空 (e.g. `{}` 或全空) => 全量
+	var req struct {
+		Codes []string `json:"codes"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errorResponse(w, "请求参数错误: "+err.Error())
+			return
+		}
+	}
+
+	start := time.Now()
+	success, failed, err := gbbq.Refresh(req.Codes)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("刷新 gbbq 失败: %v", err))
+		return
+	}
+
+	// failed map 转 string-string (JSON 序列化不友好)
+	failedMap := make(map[string]string, len(failed))
+	for code, e := range failed {
+		failedMap[code] = e.Error()
+	}
+
+	successResponse(w, map[string]any{
+		"success_count": len(success),
+		"failed_count":  len(failed),
+		"failed":        failedMap,
+		"duration_ms":   time.Since(start).Milliseconds(),
+	})
+}
+
 // handleGetGbbq 获取个股股本变迁/除权除息记录
 // TDX 推送时间 15:00 表示当日已生效,这里 +1 天作为 effective_date (除权除息日次日)
 // 用户按"哪天发生了除权除息"来理解,与 TDX 推送日 +1 一致
