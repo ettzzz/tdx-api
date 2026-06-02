@@ -68,7 +68,7 @@ func main() {
 	// === 扩展API路由 ===
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
-	http.HandleFunc("/api/kline-history", handleGetKlineHistory)
+	http.HandleFunc("/api/kline-history", handleGetKlineHistoryTHS)
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
