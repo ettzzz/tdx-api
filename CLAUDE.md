@@ -149,6 +149,7 @@ extend/                   ← higher-level utilities built on tdx
 - **New date-range endpoints** (2025-11+, 计划文档 PLAN.md §5):
   - `GET /api/turnover?code=&start_date=&end_date=` - 个股换手率序列,内部走 `Client.GetKlineDayAll` + `gbbq.GetEquity`
   - `GET /api/gbbq?code=&start_date=&end_date=` - 个股股本变迁/除权除息,数据源为 gbbq 内存缓存
+  - `POST /api/gbbq/refresh` - 主动刷新 gbbq 缓存,body `{"codes":[..]}`(可省),缺省 = 全量;**同步阻塞**,全量 9-15 分钟
   - `GET /api/kline-index-history?code=&start_date=&end_date=` - 指数/板块日 K,`code` 必须显式带交易所前缀
   - `GET /api/kline-history?code=&type=&start_date=&end_date=` - **修复了日期范围过滤,日/周/月走同花顺前复权(原始语义)**,**仅服务个股**;`Amount` 恒为 0,价格曲线连续无缝
   - `GET /api/kline-history-tdx?code=&type=&start_date=&end_date=` - 走通达信原始(不复权)数据;`Amount` 字段有真实值,除权日跳空
@@ -172,4 +173,4 @@ Multi-stage build with 国内镜像 sources (Alpine + Go proxy both pointed at A
 - **`/api/kline` day/week/month** depends on outbound to `d.10jqka.com.cn`. Behind a firewall, they degrade silently to TDX raw data — log a warning if you need to detect this.
 - **TDX servers change IPs.** `hosts.go` was last updated 2024-11-30; servers go offline without notice. `FastHosts` is the resilience layer, not a permanent server list.
 - **Single client per connection.** Don't spawn many goroutines hammering one `*Client`; use the `Pool` (via `Manage`) instead. Concurrent calls on one client serialize behind a 2s gate.
-- **`gbbq.Update()` 同步阻塞** — 首次启动时按 `DefaultGbbqSpec` cron 拉取全市场股本变迁,数千只股票可能持续数分钟,期间 `Gbbq.Update()` / `NewGbbq()` 同步等待。Docker 启动后 `/api/health` 可能在 healthcheck 周期内超时,Dockerfile 中的 `wget --spider` 已设置重试。如果看到容器反复 restart,先确认 gbbq.db 是否已初始化(写入 `data/database/gbbq.db` 后下次启动会跳过网络拉取)。
+- **`gbbq` 改为按需拉取(PLAN_v2 §3)** — `NewGbbq` 不再启动 cron 也不再调用 `Update()`,空缓存冷启动是秒级。需要数据时调 `POST /api/gbbq/refresh`(单只秒级,全量约 9-15 分钟)。`/api/turnover` 在 gbbq 缓存空时返回 turnover=0,**不会**自动补拉;查询路径与更新路径已解耦。

@@ -79,7 +79,7 @@ func (this *Updated) Updated(key string) (bool, error) {
 			return true, err
 		}
 		// 修复: 首次插入 (Time=0) 时应返回 true (需要拉取), 而非 false
-		// 原 tdx 源仓库逻辑首次返回 false 导致 gbbq.Update() 实际未拉取任何数据
+		// 原 tdx 源仓库逻辑首次返回 false 导致任何依赖 Updater 的 Update() 实际未拉取任何数据
 		return true, nil
 	}
 	// 判断是否在节点之后更新过

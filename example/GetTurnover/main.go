@@ -12,9 +12,8 @@ import (
 // 换手率 = 成交股数 / 流通股本 * 100%.
 // K 线成交量单位是"手"(1 手 = 100 股),需要 ×100 转成"股"再参与计算.
 //
-// gbbq 管理器启动时会按 cron 表达式(DefaultGbbqSpec = 工作日 9:00/15:00)定时
-// 拉取全市场股本变迁.首次启动若 Updated 节点未落库,Update() 会同步拉取全市场
-// 数据(数千只股票,可能持续数分钟),本示例中不调用,直接读取内存缓存.
+// 注意(2026-06,PLAN_v2 §3):gbbq 管理器不再自动启动 cron 拉取全市场数据.
+// NewGbbq 完成后,需要调用方自己调 Refresh(codes) 拉数据(本示例只刷新演示的那一只).
 //
 // 运行:
 //   go run ./example/GetTurnover
@@ -35,6 +34,12 @@ func main() {
 	}
 
 	code := "sz000001"
+
+	// 主动拉取该股的 gbbq 记录(单只秒级).全市场拉取请传 nil 或调用 Refresh(nil).
+	if _, _, rerr := gbbq.Refresh([]string{code}); rerr != nil {
+		logs.Errorf("刷新 %s gbbq 失败: %v", code, rerr)
+		return
+	}
 
 	// 取全量日 K(不复权,换手率与价格无关).
 	klines, err := c.GetKlineDayAll(code)

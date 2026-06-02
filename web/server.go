@@ -75,11 +75,7 @@ func init() {
 	if err != nil {
 		log.Fatalf("初始化 gbbq 失败: %v", err)
 	}
-	log.Println("正在更新 gbbq 缓存 (首次启动可能耗时数分钟)...")
-	if err := gbbq.Update(); err != nil {
-		log.Fatalf("更新 gbbq 缓存失败: %v", err)
-	}
-	log.Printf("gbbq 缓存就绪, 共 %d 只股票\n", len(gbbq.All()))
+	log.Println("gbbq 缓存已初始化 (数据按需拉取, 调 POST /api/gbbq/refresh 触发)")
 }
 
 // Response 统一响应结构
@@ -743,6 +739,7 @@ func main() {
 	http.HandleFunc("/api/kline-history-ths", handleGetKlineHistoryTHS)
 	http.HandleFunc("/api/turnover", handleGetTurnover)
 	http.HandleFunc("/api/gbbq", handleGetGbbq)
+	http.HandleFunc("/api/gbbq/refresh", handleRefreshGbbq)
 	http.HandleFunc("/api/kline-index-history", handleGetKlineIndexHistory)
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
