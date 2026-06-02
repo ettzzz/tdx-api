@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/injoyai/logs"
 	"github.com/injoyai/tdx/protocol"
 	"xorm.io/xorm"
 )
@@ -57,6 +58,14 @@ func WithGbbqDB(db *xorm.Engine) GbbqOption {
 func WithGbbqClient(c *Client) GbbqOption {
 	return func(s *Gbbq) {
 		s.c = c
+	}
+}
+
+// WithGbbqCodes 注入股票代码列表 (优先使用本地 codes 缓存)
+// 不传则回退到 c.GetStockAll() (可能受 TDX 服务器限流影响返回 0)
+func WithGbbqCodes(codes []string) GbbqOption {
+	return func(s *Gbbq) {
+		s.codes = append([]string(nil), codes...)
 	}
 }
 
@@ -124,6 +133,9 @@ type Gbbq struct {
 	c       *Client
 	db      *xorm.Engine
 	updated *Updated
+
+	// codes 可选,股票代码列表 (优先使用本地 codes 缓存,避免 TDX 协议限流)
+	codes []string
 
 	// m 全市场 gbbq 内存缓存,key 为带前缀的代码 (例 sh600000)
 	m  map[string][]*protocol.Gbbq
@@ -261,10 +273,27 @@ func (this *Gbbq) loading() (map[string][]*protocol.Gbbq, error) {
 
 // update 从 TDX 拉取全市场 gbbq,事务化覆盖写回 sqlite,更新 Updated 时间戳
 func (this *Gbbq) update() (map[string][]*protocol.Gbbq, error) {
-	gbbqs, err := this.c.GetGbbqAll()
-	if err != nil {
-		return nil, err
+	// 优先用本地 codes 缓存 (避免 TDX 协议限流返回 0)
+	codes := this.codes
+	var err error
+	if len(codes) == 0 {
+		codes, err = this.c.GetStockAll()
+		if err != nil {
+			return nil, err
+		}
 	}
+	logs.Infof("开始拉取 %d 只股票的 gbbq 数据", len(codes))
+	gbbqs := map[string][]*protocol.Gbbq{}
+	var resp *protocol.GbbqResp
+	for i, code := range codes {
+		resp, err = this.c.GetGbbq(code)
+		if err != nil {
+			logs.Warnf("拉取 %s 失败: %v (已拉取 %d/%d)", code, err, i, len(codes))
+			return nil, err
+		}
+		gbbqs[code] = resp.List
+	}
+	logs.Infof("gbbq 拉取完成,共 %d 只股票", len(gbbqs))
 	err = NewSessionFunc(this.db, func(session *xorm.Session) error {
 		// 全量替换:先清空再批量插入
 		if _, err = session.Where("1=1").Delete(new(protocol.Gbbq)); err != nil {

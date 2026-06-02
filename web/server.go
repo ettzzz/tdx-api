@@ -62,7 +62,16 @@ func init() {
 	manager.Cron.Start()
 
 	// 初始化 gbbq 管理器 (在 manager 之后)
-	gbbq, err = tdx.NewGbbq(tdx.WithGbbqClient(client))
+	// 优先使用本地 codes 缓存,避免 TDX 协议限流导致 GetStockAll() 返回 0
+	var stockCodes []string
+	if tdx.DefaultCodes != nil {
+		stockCodes = tdx.DefaultCodes.GetStocks()
+		log.Printf("从本地 codes 缓存加载 %d 只股票代码", len(stockCodes))
+	}
+	gbbq, err = tdx.NewGbbq(
+		tdx.WithGbbqClient(client),
+		tdx.WithGbbqCodes(stockCodes),
+	)
 	if err != nil {
 		log.Fatalf("初始化 gbbq 失败: %v", err)
 	}
