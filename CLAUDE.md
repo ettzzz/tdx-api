@@ -150,8 +150,9 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/turnover?code=&start_date=&end_date=` - 个股换手率序列,内部走 `Client.GetKlineDayAll` + `gbbq.GetEquity`
   - `GET /api/gbbq?code=&start_date=&end_date=` - 个股股本变迁/除权除息,数据源为 gbbq 内存缓存
   - `GET /api/kline-index-history?code=&start_date=&end_date=` - 指数/板块日 K,`code` 必须显式带交易所前缀
-  - `GET /api/kline-history?code=&type=&start_date=&end_date=` - **修复了日期范围过滤,数据源为通达信原始(不复权)**,**仅服务个股**;`Amount` 字段可用
-  - `GET /api/kline-history-ths?code=&type=&start_date=&end_date=` - 同 `/api/kline-history` 但日/周/月走同花顺前复权;`Amount` 恒为 0,价格曲线连续无缝
+  - `GET /api/kline-history?code=&type=&start_date=&end_date=` - **修复了日期范围过滤,日/周/月走同花顺前复权(原始语义)**,**仅服务个股**;`Amount` 恒为 0,价格曲线连续无缝
+  - `GET /api/kline-history-tdx?code=&type=&start_date=&end_date=` - 走通达信原始(不复权)数据;`Amount` 字段有真实值,除权日跳空
+  - `GET /api/kline-history-ths?code=&type=&start_date=&end_date=` - `/api/kline-history` 的显式命名别名,语义一致(同花顺前复权)
   - 所有上述端点共享 `parseKlineDateRange` / `inDateRange` 辅助函数(`web/server_api_extended.go`)
 
 - **Tasks** (`web/tasks.go`): in-memory only, not persisted. Each task has a `context.CancelFunc`; cancellation sets status to `cancelled` and ends the task. Test scripts cancel tasks on exit.

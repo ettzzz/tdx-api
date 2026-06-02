@@ -107,7 +107,8 @@ func handleBatchQuote(w http.ResponseWriter, r *http.Request) {
 // 获取历史K线（指定日期范围，数据源为通达信原始不复权数据）
 // 支持 start_date/end_date 按时间区间过滤,缺省时不限制
 // 注意: amount 字段来自 TDX 协议,不为 0; 但 K 线为不复权, 除权除息当日会有跳空
-func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
+// 路由: /api/kline-history-tdx
+func handleGetKlineHistoryTDX(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	klineType := r.URL.Query().Get("type")
 
