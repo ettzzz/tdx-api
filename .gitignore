@@ -1,0 +1,9 @@
+# SQLite 数据库 (运行时生成, 不入版本控制)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 文档 (本地草稿, 不入版本控制)
+PLAN*.md
+PROCESS.md
