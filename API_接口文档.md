@@ -435,13 +435,13 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 ---
 
-### 9. 获取历史K线（通达信原始数据，不复权）
+### 9. 获取历史K线（同花顺前复权）
 
 **接口**: `GET /api/kline-history`
 
-**描述**: 获取指定股票在指定时间范围内的 K 线数据，数据源为**通达信协议原始 K 线**（不复权）。`start_date` / `end_date` 缺省时不限制。**仅服务个股**，指数 / 板块请使用 `/api/kline-index-history`。
+**描述**: 获取指定股票在指定时间范围内的 K 线数据，日 / 周 / 月 K 线通过同花顺 (`d.10jqka.com.cn`) 取得**前复权**数据，价格曲线连续无缝，便于长期回测与可视化。`start_date` / `end_date` 缺省时不限制。**仅服务个股**，指数 / 板块请使用 `/api/kline-index-history`。
 
-> **端点对比**：本端点走通达信，不复权，`Amount` 字段（成交额）有真实值。**如需前复权请使用** `/api/kline-history-ths`，但该端点不返回 `Amount`。两者共用同一份请求参数与响应结构。
+> **端点对比**：本端点走同花顺前复权，`Amount` 字段（成交额）恒为 0（同花顺不返回）。**如需不复权与真实 `Amount` 请使用** `/api/kline-history-tdx`。两者共用同一份请求参数与响应结构。`/api/kline-history-ths` 是本端点的显式命名别名。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -452,8 +452,8 @@ curl -X POST http://localhost:8080/api/batch-quote \
 | end_date | string | 否 | 结束日期（`YYYYMMDD` 或 `YYYY-MM-DD`），缺省时不限制终点 |
 
 **K线类型(type)**:
-- `minute1` / `minute5` / `minute15` / `minute30` / `hour` - 分钟级 K 线（原始）
-- `day` / `week` / `month` - 日 / 周 / 月 K 线（**原始，不复权**）
+- `minute1` / `minute5` / `minute15` / `minute30` / `hour` - 分钟级 K 线（通达信原始）
+- `day` / `week` / `month` - 日 / 周 / 月 K 线（**同花顺前复权**）
 
 **请求示例**:
 ```
@@ -476,7 +476,7 @@ GET /api/kline-history?code=600519&type=minute30&start_date=20241101&end_date=20
         "Low": 8450,
         "Close": 8600,
         "Volume": 1235000,
-        "Amount": 156000000000,
+        "Amount": 0,
         "Last": 8400
       }
     ]
@@ -487,35 +487,35 @@ GET /api/kline-history?code=600519&type=minute30&start_date=20241101&end_date=20
 **数据说明**:
 - 价格单位：厘（1 元 = 1000 厘）
 - 成交量单位：手（1 手 = 100 股）
-- 成交额单位：厘
+- `Amount` 字段：恒为 0（同花顺前复权数据源不返回成交额）
 - `start_date` / `end_date` 同时省略时返回最近 800 条；指定任一端时按区间裁剪
-- 除权除息当日 K 线会**跳空**（不复权），如需看连续曲线请用 `/api/kline-history-ths`
+- 日 / 周 / 月 K 线为前复权曲线，除权除息日无跳空，长期连续显示
 
 ---
 
-### 9b. 获取历史K线（同花顺前复权）
+### 9b. 获取历史K线（TDX 原始，不复权）
 
-**接口**: `GET /api/kline-history-ths`
+**接口**: `GET /api/kline-history-tdx`
 
-**描述**: 同 `/api/kline-history`，但日 / 周 / 月 K 线通过同花顺 (`d.10jqka.com.cn`) 取得**前复权**数据，价格曲线连续无缝，便于长期回测与可视化。**仅服务个股**。
+**描述**: 获取指定股票在指定时间范围内的 K 线数据，数据源为**通达信协议原始 K 线**（不复权）。`start_date` / `end_date` 缺省时不限制。**仅服务个股**，指数 / 板块请使用 `/api/kline-index-history`。除权除息当日 K 线会**跳空**，但 `Amount`（成交额）有真实值，适合成交额 / 换手率 / 复权因子重算等场景。
 
 **与 `/api/kline-history` 的差异**:
 
-| 维度 | `/api/kline-history` | `/api/kline-history-ths` |
-|------|---------------------|-------------------------|
-| 日 / 周 / 月 数据源 | 通达信协议（不复权） | 同花顺 HTTP（前复权） |
+| 维度 | `/api/kline-history` | `/api/kline-history-tdx` |
+|------|---------------------|--------------------------|
+| 日 / 周 / 月 数据源 | 同花顺 HTTP（前复权） | 通达信协议（不复权） |
 | 分钟级数据源 | 通达信协议（原始） | 通达信协议（原始） |
-| `Amount`（成交额） | 真实值 | 恒为 0（同花顺不返回） |
-| 网络依赖 | 通达信服务器 | 通达信 + 同花顺 |
-| 启动 / 首次拉取 | 快 | 较慢（HTTP 调用） |
-| 价格曲线 | 除权日跳空 | 连续无缝 |
-| 适用场景 | 实时分析、成交额、换手率 | 回测、长期图表 |
+| `Amount`（成交额） | 恒为 0（同花顺不返回） | 真实值 |
+| 网络依赖 | 通达信 + 同花顺 | 通达信服务器 |
+| 启动 / 首次拉取 | 较慢（HTTP 调用） | 快 |
+| 价格曲线 | 连续无缝 | 除权日跳空 |
+| 适用场景 | 回测、长期图表 | 实时分析、成交额、换手率、因子重算 |
 
-**请求参数**、**响应结构**、**数据说明** 与 `/api/kline-history` 一致。
+**请求参数**、**响应结构**、**数据说明** 与 `/api/kline-history` 一致（`Amount` 字段在日 / 周 / 月 K 线上有真实值）。
 
 **请求示例**:
 ```
-GET /api/kline-history-ths?code=000001&type=day&start_date=20241001&end_date=20241101
+GET /api/kline-history-tdx?code=000001&type=day&start_date=20241001&end_date=20241101
 ```
 
 ---
