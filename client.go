@@ -76,7 +76,7 @@ func DialHostsRange(hosts []string, op ...client.Option) (cli *Client, err error
 func DialWith(dial ios.DialFunc, op ...client.Option) (cli *Client, err error) {
 
 	cli = &Client{
-		Wait: wait.New(time.Second * 2),
+		Wait: wait.New(time.Second * 5),
 		m:    maps.NewSafe(),
 	}
 
@@ -733,11 +733,13 @@ func (this *Client) GetKlineDayAll(code string) (*protocol.KlineResp, error) {
 // GetDaySnapshot 拉取一组股票"当天"日 K (count=1)
 // 单线程串行, 适合每天 16:00 一次性入库
 // 预计耗时: 5300+ 只 × ~50ms ≈ 4-15 分钟 (取决于 TDX 限流)
-// 失败模式: 宽松, 单只失败 logs.Warnf 后 continue
-// 返回: code -> Kline; 失败的 code 不在 map 中, 由调用方按入参 diff
+// 失败模式: 宽松, 单只失败 logs.Warnf 后记录到 failed 切片
+// 返回: (成功的 code -> Kline, 失败的 code 列表, 首个错误)
+// 注意: 调用方应基于入参 codes 与 result keys 自行 diff, 此处也直接返回 failed
 // 适用: 量化系统每天 16:00 调一次, 把全市场 5300+ 只的当日 OHLCV 入 MySQL
-func (this *Client) GetDaySnapshot(codes []string) (map[string]*protocol.Kline, error) {
+func (this *Client) GetDaySnapshot(codes []string) (map[string]*protocol.Kline, []string, error) {
 	result := make(map[string]*protocol.Kline, len(codes))
+	failed := make([]string, 0, len(codes))
 	var firstErr error
 	for i, code := range codes {
 		resp, err := this.GetKline(protocol.TypeKlineDay, code, 0, 1)
@@ -746,14 +748,16 @@ func (this *Client) GetDaySnapshot(codes []string) (map[string]*protocol.Kline, 
 				firstErr = fmt.Errorf("code %s: %w", code, err)
 			}
 			logs.Warnf("拉取 %s 快照失败: %v (%d/%d)", code, err, i, len(codes))
+			failed = append(failed, code)
 			continue
 		}
 		if len(resp.List) == 0 {
+			failed = append(failed, code)
 			continue
 		}
 		result[code] = resp.List[0]
 	}
-	return result, firstErr
+	return result, failed, firstErr
 }
 
 // GetGbbq 获取单只股票 gbbq (股本变迁 + 除权除息)

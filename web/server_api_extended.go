@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/injoyai/tdx"
@@ -1604,27 +1605,58 @@ func handleGetKlineIndexHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// snapshotCache 缓存当日快照, 避免同日重复拉取.
+// Key: YYYY-MM-DD (当天日期, 跨日自动失效, 重新拉取).
+// Value: successResponse 的 map[string]any 载荷 (包含 date/count/list/failed).
+// 设计取舍: 缓存的是已格式化的响应, 不是 raw Kline, 命中后 < 1ms 直接返回.
+var snapshotCache sync.Map
+
 // handleMarketSnapshot 全市场当日 K 线断面
 // 用于: 量化系统每天 16:00 调一次, 拉全市场 5300+ 只 OHLCV 入 MySQL
-// 设计: 最小字段, 单线程, 宽松失败
-// 注意: 此端点耗时长 (10-15 分钟), 客户端要设大超时 (curl -m 900)
+// 设计: 4 路并发 (manager.Pool) + chunkSize=64 + 失败二次重试 + 同日内存缓存
+// 性能: 串行 ~10-15 分钟 -> 并发 ~3-5 分钟, 命中缓存 < 1ms
 // 字段: code/open/high/low/close/volume/last_close/change_pct
 // - 价格/昨收: 厘 (×0.001 = 元)
 // - 成交量: 手 (×100 = 股)
 // - change_pct: 百分比, 直接由 protocol.Kline.RiseRate() 返回
 // 不返回 name/date/amount/change, 减少响应体积
+// 注意: 此端点首次拉取耗时长 (3-5 分钟), 客户端要设大超时 (curl -m 600)
 func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
 	if tdx.DefaultCodes == nil {
 		errorResponse(w, "代码库未初始化")
 		return
 	}
+	today := time.Now().Format("2006-01-02")
+
+	// 1) 同日内存缓存命中 (P0-6): 跨日自动失效
+	if cached, ok := snapshotCache.Load(today); ok {
+		successResponse(w, cached)
+		return
+	}
+
 	codes := tdx.DefaultCodes.GetStocks() // 5300+ 只
-	snapshots, err := client.GetDaySnapshot(codes)
+
+	// 2) 4 路并发拉取 (P0-5): chunkSize=64, 走 manager.Pool
+	snapshots, failed, err := extend.PullDaySnapshotForCodes(manager, codes)
 	if err != nil {
 		log.Printf("部分股票快照拉取失败: %v", err) // 不阻断,继续返回成功的
 	}
+
+	// 3) 失败股票二次重试 (P0-7): 500ms 延迟, 仅一次
+	if len(failed) > 0 {
+		log.Printf("快照拉取首次失败 %d 只, 500ms 后二次重试", len(failed))
+		time.Sleep(500 * time.Millisecond)
+		retried, stillFailed, retryErr := extend.PullDaySnapshotForCodes(manager, failed)
+		if retryErr != nil {
+			log.Printf("快照二次重试部分失败: %v", retryErr)
+		}
+		for k, v := range retried {
+			snapshots[k] = v
+		}
+		failed = stillFailed
+	}
+
 	list := make([]map[string]any, 0, len(snapshots))
-	today := time.Now().Format("2006-01-02")
 	for _, code := range codes {
 		k, ok := snapshots[code]
 		if !ok {
@@ -1641,9 +1673,15 @@ func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
 			"change_pct": k.RiseRate(),
 		})
 	}
-	successResponse(w, map[string]any{
-		"date":  today,
-		"count": len(list),
-		"list":  list,
-	})
+
+	resp := map[string]any{
+		"date":   today,
+		"count":  len(list),
+		"list":   list,
+		"failed": failed,
+	}
+
+	// 4) 写入当日缓存 (P0-6): 下一次同日调用直接命中
+	snapshotCache.Store(today, resp)
+	successResponse(w, resp)
 }
