@@ -1,292 +1,161 @@
-# 🐳 Docker快速参考卡
+# 🐳 Docker 快速参考卡（v2 / 2026-06）
+
+> 一页纸速查。详细文档见 `DOCKER_DEPLOY.md` / `README.md`。
+
+---
 
 ## 🚀 一键启动
 
-### Windows
-```powershell
-双击运行: docker-start.bat
-```
-
-### Linux/Mac
 ```bash
-chmod +x docker-start.sh
-./docker-start.sh
-```
-
----
-
-## 📝 常用命令
-
-### 启动服务
-```powershell
+# 标准启动
 docker-compose up -d
+
+# 等待 30-60 秒冷启动（codes/workday 拉数据）
+# 浏览器访问 http://localhost:8080
 ```
 
-### 停止服务
-```powershell
-docker-compose stop
+启动脚本：
+- Windows: 双击 `docker-start.bat`
+- Linux/Mac: `chmod +x docker-start.sh && ./docker-start.sh`
+
+---
+
+## 🆕 gbbq 按需拉取（v2 关键变更）
+
+**v2 之后，gbbq 启动时不再自动拉取**（避免 9-15 分钟启动阻塞）。需要时手动触发：
+
+```bash
+# 全量刷新（11000+ 只，约 9-15 分钟）
+curl -X POST http://localhost:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" -d '{}' -m 900
+
+# 单只刷新（几秒）
+curl -X POST http://localhost:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" -d '{"codes":["sh600000"]}'
+
+# 查当前缓存大小
+curl http://localhost:8080/api/health | grep gbbq_cache_size
 ```
 
-### 重启服务
-```powershell
-docker-compose restart
-```
+**生产定时（crontab -e）**：每个工作日 17:00 跑全量（避开 15:00 收盘回填期）：
 
-### 查看日志
-```powershell
-# 实时查看
-docker-compose logs -f
-
-# 最近100行
-docker-compose logs --tail=100
-```
-
-### 查看状态
-```powershell
-# 查看容器状态
-docker-compose ps
-
-# 查看资源使用
-docker stats tdx-stock-web
-```
-
-### 完全清理
-```powershell
-# 停止并删除容器
-docker-compose down
-
-# 同时删除镜像
-docker-compose down --rmi all
+```cron
+0 17 * * 1-5 curl -s -X POST http://localhost:8080/api/gbbq/refresh -H "Content-Type: application/json" -d '{}' -m 900 > /dev/null 2>&1
 ```
 
 ---
+
+## 🔄 版本管理（v2 新增）
+
+```bash
+# 部署特定版本
+VERSION=v1.2.3 docker-compose build
+VERSION=v1.2.3 docker-compose up -d
+
+# 回滚
+VERSION=v1.2.2 docker-compose up -d
+
+# 端口自定义
+HOST_PORT=9090 docker-compose up -d
+```
+
+---
+
+## ❤️ 健康检查（v2 增强）
+
+| 端点 | 用途 |
+|------|------|
+| `GET /api/health` | 进程级健康 + 运行时指标（gbbq_cache_size / goroutines / memory_mb） |
+| `GET /api/ready` | 就绪检查（语义：服务可接收 HTTP 请求） |
+
+```bash
+curl http://localhost:8080/api/health
+curl http://localhost:8080/api/ready
+```
+
+gbbq 缓存是否为空**不再阻塞** `/api/ready`。通过 `/api/health` 的 `gbbq_cache_size` 字段监控数据是否到位。
+
+---
+
+## 🛠 容器管理
+
+```bash
+docker-compose up -d          # 启动
+docker-compose stop          # 停止
+docker-compose restart       # 重启
+docker-compose ps            # 状态
+docker-compose logs -f       # 实时日志
+docker-compose logs --tail=100   # 最近 100 行
+docker-compose down          # 完全清理
+```
+
+## 🖥 监控 + 诊断
+
+```bash
+docker stats tdx-stock-web           # 实时资源
+docker top tdx-stock-web             # 容器进程
+docker inspect tdx-stock-web         # 容器详情（含资源限制 / 日志策略）
+docker exec -it tdx-stock-web sh     # 进入容器
+docker system prune                  # 清理未用资源
+```
 
 ## 🔧 故障排查
 
-### 查看容器日志
-```powershell
+```bash
+# 端口被占用
+# Windows:    netstat -ano | findstr :8080
+# Linux/Mac:  netstat -tulpn | grep :8080
+lsof -i :8080
+
+# 健康检查失败
 docker logs tdx-stock-web
-docker logs -f tdx-stock-web  # 实时查看
-```
+docker inspect tdx-stock-web | grep -A 5 "Health"
 
-### 进入容器
-```powershell
-docker exec -it tdx-stock-web sh
-```
-
-### 重新构建
-```powershell
+# 重新构建
 docker-compose up -d --build
 ```
 
-### 检查端口
-```powershell
-# Windows
-netstat -ano | findstr :8080
+## 🆘 完全重置（清空数据卷！慎用）
 
-# Linux
-netstat -tulpn | grep :8080
-```
-
-### 清理Docker系统
-```powershell
-# 清理未使用的容器和镜像
-docker system prune
-
-# 清理所有（谨慎使用）
-docker system prune -a
-```
-
----
-
-## 📊 监控命令
-
-### 实时资源监控
-```powershell
-docker stats
-```
-
-### 查看容器进程
-```powershell
-docker top tdx-stock-web
-```
-
-### 查看容器详情
-```powershell
-docker inspect tdx-stock-web
-```
-
-### 健康检查
-```powershell
-docker ps  # 查看HEALTH列
-```
-
----
-
-## 🌐 访问地址
-
-- **本地访问**: http://localhost:8080
-- **局域网访问**: http://你的IP:8080
-
----
-
-## ⚙️ 配置修改
-
-### 修改端口（docker-compose.yml）
-```yaml
-ports:
-  - "9090:8080"  # 将8080改为9090
-```
-
-### 修改时区（docker-compose.yml）
-```yaml
-environment:
-  - TZ=Asia/Shanghai  # 修改为你的时区
-```
-
----
-
-## 🔄 更新流程
-
-```powershell
-# 1. 停止服务
-docker-compose down
-
-# 2. 拉取最新代码（如使用Git）
-git pull
-
-# 3. 重新构建并启动
-docker-compose up -d --build
-```
-
----
-
-## 📦 备份还原
-
-### 导出镜像
-```powershell
-docker save -o stock-web.tar tdx-stock-web:latest
-```
-
-### 导入镜像
-```powershell
-docker load -i stock-web.tar
-```
-
-### 导出容器
-```powershell
-docker export tdx-stock-web > stock-web-container.tar
-```
-
----
-
-## 🎯 快速检查
-
-### 服务正常运行的标志
-
-1. ✅ 容器状态为 `Up`
-```powershell
-docker ps
-```
-
-2. ✅ 健康检查为 `healthy`
-```powershell
-docker ps  # 查看STATUS列
-```
-
-3. ✅ 日志无错误
-```powershell
-docker-compose logs | findstr "error"  # 应该无结果
-```
-
-4. ✅ 可以访问网页
-```powershell
-# 浏览器打开: http://localhost:8080
-```
-
----
-
-## 🆘 紧急处理
-
-### 服务无响应
-```powershell
-docker-compose restart
-```
-
-### 端口冲突
-```powershell
-# 修改docker-compose.yml中的端口
-# 或停止占用端口的程序
-netstat -ano | findstr :8080
-taskkill /PID <进程ID> /F
-```
-
-### 重新部署
-```powershell
-docker-compose down
-docker-compose up -d --build
-```
-
-### 完全重置
-```powershell
+```bash
 docker-compose down --rmi all --volumes
 docker-compose up -d --build
 ```
 
----
+## 💾 镜像备份
 
-## 📚 相关文档
+```bash
+# 导出
+docker save -o stock-web.tar tdx-stock-web:latest
 
-- **详细部署指南**: `DOCKER_DEPLOY.md`
-- **使用说明**: `web/USAGE.md`
-- **快速演示**: `web/DEMO.md`
-- **项目总结**: `PROJECT_SUMMARY.md`
-
----
-
-## 💡 小技巧
-
-### 查看构建过程
-```powershell
-docker-compose build --progress=plain
-```
-
-### 不使用缓存重建
-```powershell
-docker-compose build --no-cache
-```
-
-### 后台运行并查看日志
-```powershell
-docker-compose up -d && docker-compose logs -f
-```
-
-### 停止所有容器
-```powershell
-docker stop $(docker ps -aq)
-```
-
-### 删除所有容器
-```powershell
-docker rm $(docker ps -aq)
+# 导入
+docker load -i stock-web.tar
 ```
 
 ---
 
-## 🎉 成功标志
+## 📊 v2 资源限制 + 日志策略（已内置）
 
-当看到以下输出，表示成功：
+| 项 | 旧版 | v2 |
+|----|------|-----|
+| 构建镜像 | `golang:1.22-alpine` | **`golang:1.26-alpine`** |
+| 运行镜像 | `alpine:latest` | **`alpine:3.20`** |
+| CPU 限制 | 1.0 | **2.0** |
+| 内存限制 | 512M | **1G** |
+| 日志轮转 | 无 | **json-file 10m × 3** |
+| 权限 | `chown -R` 后置 | **`COPY --chown=appuser`** |
+
+---
+
+## ✅ 成功标志
 
 ```
-Creating network "tdx-master_stock-network" with driver "bridge"
+Creating network "tdx-api_stock-network" with driver "bridge"
 Creating tdx-stock-web ... done
-
-访问地址: http://localhost:8080
 ```
 
-浏览器能够正常打开页面并查看股票数据！
+`docker ps` 显示 `Up` 且 `STATUS` 为 `healthy`。
 
 ---
 
-**保存此文档以便快速查阅！** 📌
-
+**详细文档**：`DOCKER_DEPLOY.md` / `README.md` / `CLAUDE.md`

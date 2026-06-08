@@ -1,5 +1,20 @@
 # 🐳 Docker部署指南
 
+> **2026-06-02 v2 更新说明**（对应 PLAN_v2 §2 落地）
+>
+> 相比 2024-11 旧版文档，本次更新反映了以下生产化变更：
+> - **版本固定**：构建阶段 `golang:1.26-alpine`、运行阶段 `alpine:3.20`（替代 `latest`，避免某天升级破坏兼容）
+> - **构建缓存优化**：`Dockerfile` 拆两层（go mod 单独一层，源码改动不破坏 go mod 缓存）
+> - **权限收敛**：`COPY --chown=appuser:appuser` 替代后置 `chown -R /app`（仅 `/app/data` 仍需 chown）
+> - **镜像可独立 tag**：`image: tdx-stock-web:${VERSION:-latest}` 配合 `VERSION=v1.2.3 docker-compose up -d` 支持版本回滚
+> - **端口可配置**：`ports: "${HOST_PORT:-8080}:8080"` + 容器内 `PORT=8080`（与 `web/server.go` 的 `PORT` env var 配套）
+> - **资源限制**：`cpus: 2.0` + `memory: 1G`（旧版是 1.0 / 512M）
+> - **日志轮转**：`json-file` driver + `max-size: 10m` × `max-file: 3`
+> - **健康检查端点升级**：`/api/health` 增强版（含 gbbq_cache_size / goroutines / memory_mb 等运行时指标），新增 `/api/ready` 就绪检查
+> - **gbbq 按需拉取（PLAN_v2 §3）**：`/api/turnover` / `/api/gbbq` 等依赖 gbbq 缓存的端点在容器启动时**不会**自动拉数据，需要手动 `POST /api/gbbq/refresh` 触发（详见下文"gbbq 按需拉取"章节）
+>
+> 文档保留旧版基础内容（容器管理、故障排查、常用命令等），这些仍适用。
+
 ## 📋 概述
 
 使用Docker部署TDX股票数据查询系统，无需配置Go环境，一键启动！
@@ -398,20 +413,65 @@ docker top tdx-stock-web
 
 ### 健康检查
 
-容器配置了自动健康检查：
+容器配置了自动健康检查，**v2 升级要点**：
 
 ```yaml
 healthcheck:
-  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
-  interval: 30s      # 每30秒检查一次
-  timeout: 3s        # 超时时间3秒
-  retries: 3         # 失败3次后标记为unhealthy
-  start_period: 5s   # 启动后5秒开始检查
+  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+  interval: 30s       # 每30秒检查一次
+  timeout: 3s         # 超时时间3秒
+  retries: 3          # 失败3次后标记为unhealthy
+  start_period: 600s  # 启动后 600 秒才开始检查（gbbq 已按需，但 codes/workday 仍要从 TDX 拉一次）
 ```
+
+**v2 健康检查端点**：
+
+| 端点 | 用途 | 适用场景 |
+|------|------|----------|
+| `GET /api/health` | 进程级健康 + 运行时指标 | docker `HEALTHCHECK` / k8s liveness probe / 监控系统 |
+| `GET /api/ready` | 服务可接收 HTTP 请求 | k8s readiness probe / 反向代理 upstream |
+
+**`/api/health` 响应（v2 增强版，标准信封）**：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "status":          "healthy",
+    "time":            1780409238,
+    "uptime_seconds":  54,
+    "gbbq_cache_size": 5525,
+    "goroutines":      25,
+    "memory_mb":       58
+  }
+}
+```
+
+**`/api/ready` 响应**：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {"ready": true, "uptime_seconds": 54}
+}
+```
+
+**重要语义变化**（v2）：
+- gbbq 缓存是否为空**不再**阻塞 `/api/ready`——缓存空时 `/api/turnover` 等端点仍 200，由调用方按需 `POST /api/gbbq/refresh` 触发
+- 监控 `gbbq_cache_size` 字段判断数据是否到位：`0` 表示尚未拉过
 
 查看健康状态：
 ```powershell
 docker ps  # 查看HEALTH列
+```
+
+手动测试：
+```bash
+# 容器内
+docker exec tdx-stock-web wget -q -O - http://localhost:8080/api/health
+docker exec tdx-stock-web wget -q -O - http://localhost:8080/api/ready
+# 宿主机
+curl http://localhost:8080/api/health
 ```
 
 ### 备份和恢复
@@ -431,6 +491,69 @@ docker load -i tdx-stock-web-backup.tar
 
 ## 🔄 更新和升级
 
+### 🆕 gbbq 按需拉取（v2 关键变更）
+
+> **这是 v2 最重要的行为变化，请仔细阅读。**
+
+v2 之前，gbbq（股本变迁 / 除权除息）数据在容器启动时**自动**从 TDX 拉取全市场 11000+ 只股票（耗时 9-15 分钟）。
+v2 之后，gbbq 启动时**不再自动拉取**——服务可用时间从 ~10 分钟降到 < 5 秒，但 `gbbq_cache_size: 0`。
+
+**哪些端点受 gbbq 缓存影响？**
+- `GET /api/turnover`（个股换手率序列）—— 缓存空时返回 `turnover=0`
+- `GET /api/gbbq`（股本变迁 / 除权除息）—— 缓存空时返回 `equity: []` / `xrxd: []`
+- `POST /api/gbbq/refresh`（**新增端点**）—— 主动触发拉取
+
+**拉取数据（首次部署后必跑）**：
+
+```bash
+# 全量刷新 (11000+ 只, 约 9-15 分钟, 同步阻塞, 客户端要 -m 900)
+curl -X POST http://localhost:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  -m 900
+
+# 单只刷新 (几秒)
+curl -X POST http://localhost:8080/api/gbbq/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"codes":["sh600000","sz000001"]}'
+
+# 响应示例 (全量)
+# {
+#   "code": 0, "message": "success",
+#   "data": {
+#     "success_count": 5525,
+#     "failed_count": 0,
+#     "failed": {},
+#     "duration_ms": 542000
+#   }
+# }
+```
+
+**生产建议：用 crontab 定期刷新**
+
+```bash
+# crontab -e
+# 每个工作日 17:00 跑一次全量 (避开 15:00 收盘数据回填期, 16:00 后拉"当天"数据)
+0 17 * * 1-5 curl -s -X POST http://localhost:8080/api/gbbq/refresh -H "Content-Type: application/json" -d '{}' -m 900 > /dev/null 2>&1
+```
+
+**容器内查看当前缓存大小**：
+
+```bash
+docker exec tdx-stock-web wget -q -O - http://localhost:8080/api/health | grep gbbq_cache_size
+# 输出: "gbbq_cache_size": 5525,
+```
+
+**常见疑问**：
+- Q: 不跑 refresh 会怎样？
+- A: 服务**完全可用**，`/api/turnover` 返回 0（不是 bug），其他端点（行情/K线等）不受影响
+- Q: 每天什么时机跑最好？
+- A: 每个交易日 16:00 之后（避开 15:00 收盘数据回填期）
+- Q: 失败的单只股票会怎样？
+- A: 宽松模式——单只失败 `logs.Warnf` 后 continue，不阻断整批。响应里 `failed` map 记录失败 code → error
+
+---
+
 ### 更新应用
 
 ```powershell
@@ -448,6 +571,26 @@ docker-compose logs -f
 ```
 
 ### 版本管理
+
+**v2 升级要点**：通过 `VERSION` 环境变量独立 tag 镜像，支持版本回滚。
+
+```powershell
+# 标准 v2 流程: 用 VERSION tag 镜像 + docker-compose
+VERSION=v1.2.3 docker-compose build
+VERSION=v1.2.3 docker-compose up -d
+
+# 镜像会同时带 latest 和具体版本两个 tag
+#   tdx-stock-web:latest
+#   tdx-stock-web:v1.2.3
+
+# 回滚到上一个版本
+VERSION=v1.2.2 docker-compose up -d
+
+# 列出所有版本
+docker images tdx-stock-web
+```
+
+**手动 docker build**（旧版命令，保留供参考）：
 
 ```powershell
 # 构建带版本标签的镜像
@@ -524,17 +667,23 @@ services:
 
 ### 2. 资源限制
 
+**v2 升级要点**：v2 默认 2.0 CPU / 1G 内存（旧版是 1.0 / 512M）。gbbq 全量刷新时内存峰值约 200-400MB，1G 足够。
+
 ```yaml
 services:
   stock-web:
+    # v2 资源限制
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '2.0'   # v2: 1.0 → 2.0
+          memory: 1G    # v2: 512M → 1G
+    # v2 日志轮转 (防止容器日志把磁盘吃满)
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'   # 单文件最大 10MB
+        max-file: '3'     # 保留 3 个文件 = 30MB 总上限
 ```
 
 ### 3. 容器优化

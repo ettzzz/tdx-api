@@ -19,7 +19,10 @@ import (
 var (
 	client      *tdx.Client
 	manager     *tdx.Manage
+	gbbq        *tdx.Gbbq
 	taskManager = NewTaskManager()
+	// startedAt 进程启动时间, 用于 /api/ready 与 /api/health 计算 uptime
+	startedAt = time.Now()
 )
 
 func init() {
@@ -39,11 +42,9 @@ func init() {
 		log.Printf("初始化代码库失败: %v", err)
 	} else {
 		tdx.DefaultCodes = codes
-		if err := tdx.DefaultCodes.Update(); err != nil {
-			log.Printf("更新代码库失败: %v", err)
-		} else {
-			log.Printf("已加载股票代码，共 %d 条", len(tdx.DefaultCodes.Map))
-		}
+		// NewCodesSqlite 内部已自动 Update 一次 (codes.go:78-122, 通过 Updated 节点判断),
+		// 不需要再额外调一次
+		log.Printf("已加载股票代码，共 %d 条", len(tdx.DefaultCodes.Map))
 	}
 
 	manager, err = tdx.NewManage(&tdx.ManageConfig{
@@ -59,6 +60,22 @@ func init() {
 		log.Printf("更新交易日数据失败: %v", err)
 	}
 	manager.Cron.Start()
+
+	// 初始化 gbbq 管理器 (在 manager 之后)
+	// 优先使用本地 codes 缓存,避免 TDX 协议限流导致 GetStockAll() 返回 0
+	var stockCodes []string
+	if tdx.DefaultCodes != nil {
+		stockCodes = tdx.DefaultCodes.GetStocks()
+		log.Printf("从本地 codes 缓存加载 %d 只股票代码", len(stockCodes))
+	}
+	gbbq, err = tdx.NewGbbq(
+		tdx.WithGbbqClient(client),
+		tdx.WithGbbqCodes(stockCodes),
+	)
+	if err != nil {
+		log.Fatalf("初始化 gbbq 失败: %v", err)
+	}
+	log.Println("gbbq 缓存已初始化 (数据按需拉取, 调 POST /api/gbbq/refresh 触发)")
 }
 
 // Response 统一响应结构
@@ -657,6 +674,20 @@ func splitCodes(param string) []string {
 	return result
 }
 
+// handleReady 就绪检查 (PLAN_v2 §2.3.4)
+// 语义: "服务可以接收 HTTP 请求" — 与 /api/health 的差异:
+//   - /api/health: 进程级健康检查, 给 docker healthcheck / k8s liveness 用
+//   - /api/ready:  就绪检查, 给 k8s readiness probe / 反向代理 upstream 用
+// §3 之后, gbbq 缓存按需拉取, 启动时不再阻塞; 因此 ready 与启动时间挂钩即可.
+// 注: gbbq 缓存是否为空不再阻塞 ready — 缓存空时 /api/turnover 等端点仍会 200,
+//     调用方按需 POST /api/gbbq/refresh 触发全量 / 单只拉取.
+func handleReady(w http.ResponseWriter, r *http.Request) {
+	successResponse(w, map[string]interface{}{
+		"ready":          true,
+		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+	})
+}
+
 func getMinuteWithFallback(code, date string) (*protocol.MinuteResp, string, error) {
 	target := strings.TrimSpace(date)
 	if target == "" {
@@ -717,15 +748,23 @@ func main() {
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
-	http.HandleFunc("/api/kline-history", handleGetKlineHistory)
+	http.HandleFunc("/api/kline-history", handleGetKlineHistoryTHS)
+	http.HandleFunc("/api/kline-history-tdx", handleGetKlineHistoryTDX)
+	http.HandleFunc("/api/kline-history-ths", handleGetKlineHistoryTHS)
+	http.HandleFunc("/api/turnover", handleGetTurnover)
+	http.HandleFunc("/api/gbbq", handleGetGbbq)
+	http.HandleFunc("/api/gbbq/refresh", handleRefreshGbbq)
+	http.HandleFunc("/api/kline-index-history", handleGetKlineIndexHistory)
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
+	http.HandleFunc("/api/market-snapshot", handleMarketSnapshot)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
 	http.HandleFunc("/api/server-status", handleGetServerStatus)
 	http.HandleFunc("/api/health", handleHealthCheck)
+	http.HandleFunc("/api/ready", handleReady)
 	http.HandleFunc("/api/etf", handleGetETFList)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
 	http.HandleFunc("/api/trade-history/full", handleGetTradeHistoryFull)
@@ -742,6 +781,9 @@ func main() {
 	http.HandleFunc("/api/tasks/", handleTaskOperations)
 
 	port := ":8080"
+	if p := os.Getenv("PORT"); p != "" {
+		port = ":" + p
+	}
 	log.Printf("服务启动成功，访问 http://localhost%s\n", port)
 	log.Fatal(http.ListenAndServe(port, nil))
 }

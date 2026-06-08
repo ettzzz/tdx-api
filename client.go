@@ -76,7 +76,7 @@ func DialHostsRange(hosts []string, op ...client.Option) (cli *Client, err error
 func DialWith(dial ios.DialFunc, op ...client.Option) (cli *Client, err error) {
 
 	cli = &Client{
-		Wait: wait.New(time.Second * 2),
+		Wait: wait.New(time.Second * 5),
 		m:    maps.NewSafe(),
 	}
 
@@ -166,6 +166,9 @@ func (this *Client) handlerDealMessage(c *client.Client, msg ios.Acker) {
 
 	case protocol.TypeKline:
 		resp, err = protocol.MKline.Decode(f.Data, val.(protocol.KlineCache))
+
+	case protocol.TypeGbbq:
+		resp, err = protocol.MGbbq.Decode(f.Data)
 
 	default:
 		err = fmt.Errorf("通讯类型未解析:0x%X", f.Type)
@@ -349,19 +352,10 @@ func (this *Client) GetQuote(codes ...string) (protocol.QuotesResp, error) {
 	return quotes, nil
 }
 
-// GetMinute 获取分时数据,todo 解析好像不对,先用历史数据
+// GetMinute 获取当天分时数据(实际走历史分时接口,因协议层 MMinute.Frame 解析有问题)
+// 改用 GetHistoryMinute("今天") 是历史行为,这里保留同款实现并清理掉旧 unreachable code
 func (this *Client) GetMinute(code string) (*protocol.MinuteResp, error) {
 	return this.GetHistoryMinute(time.Now().Format("20060102"), code)
-
-	f, err := protocol.MMinute.Frame(code)
-	if err != nil {
-		return nil, err
-	}
-	result, err := this.SendFrame(f)
-	if err != nil {
-		return nil, err
-	}
-	return result.(*protocol.MinuteResp), nil
 }
 
 // GetHistoryMinute 获取历史分时数据
@@ -734,6 +728,68 @@ func (this *Client) GetKlineDay(code string, start, count uint16) (*protocol.Kli
 // GetKlineDayAll 获取日k线全部数据
 func (this *Client) GetKlineDayAll(code string) (*protocol.KlineResp, error) {
 	return this.GetKlineAll(protocol.TypeKlineDay, code)
+}
+
+// GetDaySnapshot 拉取一组股票"当天"日 K (count=1)
+// 单线程串行, 适合每天 16:00 一次性入库
+// 预计耗时: 5300+ 只 × ~50ms ≈ 4-15 分钟 (取决于 TDX 限流)
+// 失败模式: 宽松, 单只失败 logs.Warnf 后记录到 failed 切片
+// 返回: (成功的 code -> Kline, 失败的 code 列表, 首个错误)
+// 注意: 调用方应基于入参 codes 与 result keys 自行 diff, 此处也直接返回 failed
+// 适用: 量化系统每天 16:00 调一次, 把全市场 5300+ 只的当日 OHLCV 入 MySQL
+func (this *Client) GetDaySnapshot(codes []string) (map[string]*protocol.Kline, []string, error) {
+	result := make(map[string]*protocol.Kline, len(codes))
+	failed := make([]string, 0, len(codes))
+	var firstErr error
+	for i, code := range codes {
+		resp, err := this.GetKline(protocol.TypeKlineDay, code, 0, 1)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("code %s: %w", code, err)
+			}
+			logs.Warnf("拉取 %s 快照失败: %v (%d/%d)", code, err, i, len(codes))
+			failed = append(failed, code)
+			continue
+		}
+		if len(resp.List) == 0 {
+			failed = append(failed, code)
+			continue
+		}
+		result[code] = resp.List[0]
+	}
+	return result, failed, firstErr
+}
+
+// GetGbbq 获取单只股票 gbbq (股本变迁 + 除权除息)
+func (this *Client) GetGbbq(code string) (*protocol.GbbqResp, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MGbbq.Frame(code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.GbbqResp), nil
+}
+
+// GetGbbqAll 拉取全市场 gbbq 数据
+func (this *Client) GetGbbqAll() (map[string][]*protocol.Gbbq, error) {
+	codes, err := this.GetStockAll()
+	if err != nil {
+		return nil, err
+	}
+	gbbqs := map[string][]*protocol.Gbbq{}
+	var resp *protocol.GbbqResp
+	for _, code := range codes {
+		resp, err = this.GetGbbq(code)
+		if err != nil {
+			return nil, err
+		}
+		gbbqs[code] = resp.List
+	}
+	return gbbqs, nil
 }
 
 func (this *Client) GetKlineDayUntil(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {

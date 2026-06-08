@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/injoyai/tdx"
@@ -103,80 +106,137 @@ func handleBatchQuote(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, quotes)
 }
 
-// 获取历史K线（指定范围，日/周/月K线使用前复权）
-func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
+// 获取历史K线（指定日期范围，数据源为通达信原始不复权数据）
+// 支持 start_date/end_date 按时间区间过滤,缺省时不限制
+// 注意: amount 字段来自 TDX 协议,不为 0; 但 K 线为不复权, 除权除息当日会有跳空
+// 路由: /api/kline-history-tdx
+func handleGetKlineHistoryTDX(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	klineType := r.URL.Query().Get("type")
-	limitStr := r.URL.Query().Get("limit")
 
 	if code == "" {
 		errorResponse(w, "股票代码不能为空")
 		return
 	}
 
-	// 解析limit，默认100，最大800
-	limit := uint16(100)
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			if l > 800 {
-				l = 800
-			}
-			limit = uint16(l)
-		}
+	// 解析日期范围
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
 	}
 
 	var resp *protocol.KlineResp
-	var err error
+	var qerr error
 
 	switch klineType {
 	case "minute1":
-		resp, err = client.GetKlineMinute(code, 0, limit)
+		resp, _ = client.GetKlineMinuteAll(code)
 	case "minute5":
-		resp, err = client.GetKline5Minute(code, 0, limit)
+		resp, _ = client.GetKline5MinuteAll(code)
 	case "minute15":
-		resp, err = client.GetKline15Minute(code, 0, limit)
+		resp, _ = client.GetKline15MinuteAll(code)
 	case "minute30":
-		resp, err = client.GetKline30Minute(code, 0, limit)
+		resp, _ = client.GetKline30MinuteAll(code)
 	case "hour":
-		resp, err = client.GetKlineHour(code, 0, limit)
+		resp, _ = client.GetKlineHourAll(code)
 	case "week":
-		// 周K线使用前复权
-		resp, err = getQfqKlineDay(code)
-		if err == nil {
+		resp, qerr = client.GetKlineWeekAll(code)
+	case "month":
+		resp, qerr = client.GetKlineMonthAll(code)
+	case "day":
+		fallthrough
+	default:
+		// 日K线直接走 TDX 原始 (不复权)
+		resp, qerr = client.GetKlineDayAll(code)
+	}
+
+	if resp == nil || len(resp.List) == 0 {
+		msg := "获取K线失败"
+		if qerr != nil {
+			msg = fmt.Sprintf("获取K线失败: %v", qerr)
+		}
+		errorResponse(w, msg)
+		return
+	}
+
+	// 日期过滤
+	filtered := make([]*protocol.Kline, 0, len(resp.List))
+	for _, k := range resp.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		filtered = append(filtered, k)
+	}
+	resp.List = filtered
+	resp.Count = uint16(len(filtered))
+
+	successResponse(w, resp)
+}
+
+// handleGetKlineHistoryTHS 获取历史K线 (同花顺前复权)
+// 行为与改造前的 /api/kline-history 一致: 日/周/月K线走同花顺前复权
+// 用于需要看到连贯复权曲线的场景 (如长期回测、显示连续价格)
+// 注意: amount 字段同花顺不返回,恒为 0
+func handleGetKlineHistoryTHS(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	klineType := r.URL.Query().Get("type")
+
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	var resp *protocol.KlineResp
+	var qerr error
+
+	switch klineType {
+	case "week":
+		resp, qerr = getQfqKlineDay(code)
+		if err == nil && resp != nil {
 			resp = convertToWeekKline(resp)
-			// 限制返回数量
-			if len(resp.List) > int(limit) {
-				resp.List = resp.List[len(resp.List)-int(limit):]
-				resp.Count = limit
-			}
 		}
 	case "month":
-		// 月K线使用前复权
-		resp, err = getQfqKlineDay(code)
-		if err == nil {
+		resp, qerr = getQfqKlineDay(code)
+		if err == nil && resp != nil {
 			resp = convertToMonthKline(resp)
-			// 限制返回数量
-			if len(resp.List) > int(limit) {
-				resp.List = resp.List[len(resp.List)-int(limit):]
-				resp.Count = limit
-			}
 		}
 	case "day":
 		fallthrough
 	default:
-		// 日K线使用前复权
-		resp, err = getQfqKlineDay(code)
-		if err == nil && len(resp.List) > int(limit) {
-			// 只返回最近limit条
-			resp.List = resp.List[len(resp.List)-int(limit):]
-			resp.Count = limit
-		}
+		resp, qerr = getQfqKlineDay(code)
 	}
 
-	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取K线失败: %v", err))
+	if resp == nil || len(resp.List) == 0 {
+		msg := "获取K线失败"
+		if qerr != nil {
+			msg = fmt.Sprintf("获取K线失败: %v", qerr)
+		}
+		errorResponse(w, msg)
 		return
 	}
+
+	filtered := make([]*protocol.Kline, 0, len(resp.List))
+	for _, k := range resp.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		filtered = append(filtered, k)
+	}
+	resp.List = filtered
+	resp.Count = uint16(len(filtered))
 
 	successResponse(w, resp)
 }
@@ -882,12 +942,33 @@ func handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // 健康检查
+// 返回进程级健康状态 + 关键运行时指标, 用于 docker healthcheck / k8s liveness probe
+// 字段:
+//   - status:        固定 "healthy" (只要进程能响应就 200)
+//   - time:          当前 unix 时间戳 (秒), 不再是写死的 1730617200
+//   - uptime_seconds: 进程启动至今的秒数, 与 /api/ready 同一基准
+//   - gbbq_cache_size: gbbq 内存缓存中的股票数 (0 表示尚未拉过, 正常冷启动状态)
+//   - goroutines:    当前 goroutine 数, 用来辅助观察是否有泄漏
+//   - memory_mb:     当前堆分配内存 (Alloc, MB), 粗略指标
+// 注: 已切到标准响应信封 (code/message/data), 老格式 `{"status":..,"time":..}` 不再保留.
+//     历史冒烟脚本 run_api_checks.py 通过 `data.code==0` 判定, 不受影响.
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "healthy",
-		"time":   fmt.Sprintf("%d", 1730617200),
+	gbbqSize := 0
+	if gbbq != nil {
+		gbbqSize = len(gbbq.All())
+	}
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	memMB := memStats.Alloc / 1024 / 1024
+
+	successResponse(w, map[string]interface{}{
+		"status":         "healthy",
+		"time":           time.Now().Unix(),
+		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+		"gbbq_cache_size": gbbqSize,
+		"goroutines":     runtime.NumGoroutine(),
+		"memory_mb":      memMB,
 	})
 }
 
@@ -1292,4 +1373,315 @@ func fetchIndexAll(code, klineType string) ([]*protocol.Kline, error) {
 		}
 		return resp.List, nil
 	}
+}
+
+// parseKlineDateRange 解析 start_date/end_date, 缺省时不报错(返回 zero 值表示不限制)
+func parseKlineDateRange(r *http.Request) (start, end time.Time, err error) {
+	if s := r.URL.Query().Get("start_date"); s != "" {
+		start, err = parseFullDate(s)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("start_date 格式错误: %w", err)
+		}
+	}
+	if e := r.URL.Query().Get("end_date"); e != "" {
+		end, err = parseFullDate(e)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("end_date 格式错误: %w", err)
+		}
+	}
+	if !start.IsZero() && !end.IsZero() && start.After(end) {
+		return time.Time{}, time.Time{}, errors.New("start_date 早于 end_date")
+	}
+	return start, end, nil
+}
+
+// inDateRange 检查 t 是否在 [start, end] 区间内, 零值表示不限
+func inDateRange(t, start, end time.Time) bool {
+	if !start.IsZero() && t.Before(start) {
+		return false
+	}
+	if !end.IsZero() && t.After(end) {
+		return false
+	}
+	return true
+}
+
+// handleGetTurnover 获取个股换手率序列
+// 计算逻辑: turnover = kline.Volume * 100 / 流通股本 * 100,单位为百分比
+// volume 单位为手 (1 手 = 100 股),所以乘 100 转成股
+func handleGetTurnover(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	// 拉取日K线 (不复权,换手率与价格无关)
+	klines, err := client.GetKlineDayAll(code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取K线失败: %v", err))
+		return
+	}
+
+	list := make([]map[string]any, 0, len(klines.List))
+	for _, k := range klines.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		// 取当日生效的流通股本
+		eq := gbbq.GetEquity(code, k.Time)
+		var turnover float64
+		var floatShares int64
+		if eq != nil && eq.Float > 0 {
+			// TDX 成交量单位是手,需 * 100 转成股
+			turnover = float64(k.Volume*100) / float64(eq.Float) * 100
+			floatShares = eq.Float
+		}
+		list = append(list, map[string]any{
+			"date":     k.Time.Format("2006-01-02"),
+			"turnover": turnover,
+			"float":    floatShares,
+		})
+	}
+
+	successResponse(w, map[string]any{
+		"code":  protocol.AddPrefix(code),
+		"count": len(list),
+		"list":  list,
+	})
+}
+
+// handleRefreshGbbq 主动触发 gbbq 数据拉取
+// POST /api/gbbq/refresh
+// 请求体: {"codes": ["sh600000", ...]}  // 可选, 缺省 = 全量
+// 响应: { success_count, failed_count, failed: {code: err}, duration_ms }
+// 注意: 同步阻塞, 全量 11000+ 只约 9 分钟, 客户端需要 -m 600 以上的超时
+func handleRefreshGbbq(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, "只支持 POST 请求")
+		return
+	}
+	if gbbq == nil {
+		errorResponse(w, "gbbq 管理器未初始化")
+		return
+	}
+
+	// 请求体可能为空 (e.g. `{}` 或全空) => 全量
+	var req struct {
+		Codes []string `json:"codes"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errorResponse(w, "请求参数错误: "+err.Error())
+			return
+		}
+	}
+
+	start := time.Now()
+	success, failed, err := gbbq.Refresh(req.Codes)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("刷新 gbbq 失败: %v", err))
+		return
+	}
+
+	// failed map 转 string-string (JSON 序列化不友好)
+	failedMap := make(map[string]string, len(failed))
+	for code, e := range failed {
+		failedMap[code] = e.Error()
+	}
+
+	successResponse(w, map[string]any{
+		"success_count": len(success),
+		"failed_count":  len(failed),
+		"failed":        failedMap,
+		"duration_ms":   time.Since(start).Milliseconds(),
+	})
+}
+
+// handleGetGbbq 获取个股股本变迁/除权除息记录
+// TDX 推送时间 15:00 表示当日已生效,这里 +1 天作为 effective_date (除权除息日次日)
+// 用户按"哪天发生了除权除息"来理解,与 TDX 推送日 +1 一致
+func handleGetGbbq(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	fullCode := protocol.AddPrefix(code)
+	equity := make([]map[string]any, 0)
+	xrxd := make([]map[string]any, 0)
+
+	if gbbq != nil {
+		for _, g := range gbbq.All()[fullCode] {
+			if g == nil {
+				continue
+			}
+			// +1 天作为对外的有效日期 (TDX 推 15:00 表示当日生效,次日股价才反映)
+			effectiveDate := g.Time.Add(24 * time.Hour)
+			if !inDateRange(effectiveDate, start, end) {
+				continue
+			}
+			d := effectiveDate.Format("2006-01-02")
+			if g.IsEquity() {
+				e := g.Equity()
+				equity = append(equity, map[string]any{
+					"date":     d,
+					"category": e.Category,
+					"float":    e.Float,
+					"total":    e.Total,
+				})
+			}
+			if g.IsXRXD() {
+				x := g.XRXD()
+				xrxd = append(xrxd, map[string]any{
+					"date":         d,
+					"fenhong":      x.Fenhong,
+					"peigujia":     x.Peigujia,
+					"songzhuangu":  x.Songzhuangu,
+					"peigu":        x.Peigu,
+				})
+			}
+		}
+	}
+
+	successResponse(w, map[string]any{
+		"code":   fullCode,
+		"equity": equity,
+		"xrxd":   xrxd,
+	})
+}
+
+// handleGetKlineIndexHistory 获取指数/板块历史日K线
+// 仅日 K,不不复权,日期范围可选
+func handleGetKlineIndexHistory(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "指数代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	klines, err := client.GetIndexDayAll(code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取指数K线失败: %v", err))
+		return
+	}
+
+	list := make([]*protocol.Kline, 0, len(klines.List))
+	for _, k := range klines.List {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		list = append(list, k)
+	}
+
+	successResponse(w, map[string]any{
+		"count": len(list),
+		"list":  list,
+	})
+}
+
+// snapshotCache 缓存当日快照, 避免同日重复拉取.
+// Key: YYYY-MM-DD (当天日期, 跨日自动失效, 重新拉取).
+// Value: successResponse 的 map[string]any 载荷 (包含 date/count/list/failed).
+// 设计取舍: 缓存的是已格式化的响应, 不是 raw Kline, 命中后 < 1ms 直接返回.
+var snapshotCache sync.Map
+
+// handleMarketSnapshot 全市场当日 K 线断面
+// 用于: 量化系统每天 16:00 调一次, 拉全市场 5300+ 只 OHLCV 入 MySQL
+// 设计: 4 路并发 (manager.Pool) + chunkSize=64 + 失败二次重试 + 同日内存缓存
+// 性能: 串行 ~10-15 分钟 -> 并发 ~3-5 分钟, 命中缓存 < 1ms
+// 字段: code/open/high/low/close/volume/last_close/change_pct
+// - 价格/昨收: 厘 (×0.001 = 元)
+// - 成交量: 手 (×100 = 股)
+// - change_pct: 百分比, 直接由 protocol.Kline.RiseRate() 返回
+// 不返回 name/date/amount/change, 减少响应体积
+// 注意: 此端点首次拉取耗时长 (3-5 分钟), 客户端要设大超时 (curl -m 600)
+func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
+	if tdx.DefaultCodes == nil {
+		errorResponse(w, "代码库未初始化")
+		return
+	}
+	today := time.Now().Format("2006-01-02")
+
+	// 1) 同日内存缓存命中 (P0-6): 跨日自动失效
+	if cached, ok := snapshotCache.Load(today); ok {
+		successResponse(w, cached)
+		return
+	}
+
+	codes := tdx.DefaultCodes.GetStocks() // 5300+ 只
+
+	// 2) 4 路并发拉取 (P0-5): chunkSize=64, 走 manager.Pool
+	snapshots, failed, err := extend.PullDaySnapshotForCodes(manager, codes)
+	if err != nil {
+		log.Printf("部分股票快照拉取失败: %v", err) // 不阻断,继续返回成功的
+	}
+
+	// 3) 失败股票二次重试 (P0-7): 500ms 延迟, 仅一次
+	if len(failed) > 0 {
+		log.Printf("快照拉取首次失败 %d 只, 500ms 后二次重试", len(failed))
+		time.Sleep(500 * time.Millisecond)
+		retried, stillFailed, retryErr := extend.PullDaySnapshotForCodes(manager, failed)
+		if retryErr != nil {
+			log.Printf("快照二次重试部分失败: %v", retryErr)
+		}
+		for k, v := range retried {
+			snapshots[k] = v
+		}
+		failed = stillFailed
+	}
+
+	list := make([]map[string]any, 0, len(snapshots))
+	for _, code := range codes {
+		k, ok := snapshots[code]
+		if !ok {
+			continue
+		}
+		list = append(list, map[string]any{
+			"code":       code,
+			"open":       k.Open,
+			"high":       k.High,
+			"low":        k.Low,
+			"close":      k.Close,
+			"volume":     k.Volume,
+			"last_close": k.Last,
+			"change_pct": k.RiseRate(),
+		})
+	}
+
+	resp := map[string]any{
+		"date":   today,
+		"count":  len(list),
+		"list":   list,
+		"failed": failed,
+	}
+
+	// 4) 写入当日缓存 (P0-6): 下一次同日调用直接命中
+	snapshotCache.Store(today, resp)
+	successResponse(w, resp)
 }

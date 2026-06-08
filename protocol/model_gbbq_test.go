@@ -1,0 +1,12 @@
+package protocol
+
+import (
+	"testing"
+)
+
+func TestXRXD_FQ(t *testing.T) {
+	p := Price(1000)   //10元
+	x := XRXD{Fenhong: 5} //10股分红5元
+	p2 := x.Pre(p)
+	t.Log("复权价:", p2)
+}

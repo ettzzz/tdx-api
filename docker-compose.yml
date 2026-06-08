@@ -3,25 +3,53 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # 独立 image tag, 配合 VERSION 环境变量支持回滚:
+    #   VERSION=v1.2.3 docker-compose build
+    #   VERSION=v1.2.3 docker-compose up -d
+    image: tdx-stock-web:${VERSION:-latest}
     container_name: tdx-stock-web
+    # 端口可由 HOST_PORT 环境变量覆盖 (与 web/server.go 的 PORT env var 配套)
     ports:
-      - "8080:8080"
+      - "${HOST_PORT:-8080}:8080"
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      # 与 Dockerfile EXPOSE 8080 保持一致; 容器内监听端口固定, 宿主机端口由 HOST_PORT 控制
+      - PORT=8080
     networks:
       - stock-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
-      start_period: 5s
+      # start-period=600s: 即使 gbbq 按需拉取(冷启动秒级), codes/workday 启动时
+      # 仍会从 TDX 拉一次; 600s 缓冲期可保证 healthcheck 不误报 unhealthy
+      start_period: 600s
+    volumes:
+      # 持久化 sqlite 数据库 (codes.db / workday.db / gbbq.db)
+      # 避免容器重启时重新拉数据
+      - tdx-data:/app/data/database
+    # 资源限制 (推荐项 §2.3.1) — 防止 OOM 拖垮宿主机
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    # 日志轮转 (推荐项 §2.3.2) — 防止容器日志把磁盘吃满
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
     labels:
       - "com.stock.description=TDX Stock Data Query System"
       - "com.stock.version=1.0.0"
 
+volumes:
+  tdx-data:
+    driver: local
+
 networks:
   stock-network:
     driver: bridge
-
