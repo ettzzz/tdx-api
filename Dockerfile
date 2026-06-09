@@ -15,7 +15,7 @@ ENV GO111MODULE=on \
     GOTOOLCHAIN=auto \
     CGO_ENABLED=0 \
     GOOS=linux \
-    GOARCH=amd64
+    GOARCH=arm64
 
 # ---- 第 1 层: 仅 Go 模块清单 (提升 build cache 命中率) ----
 # 这一层只依赖 go.mod / go.sum, 源码改动不会让 go mod 下载重跑
