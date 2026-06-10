@@ -138,7 +138,7 @@ extend/                   ← higher-level utilities built on tdx
 
 - **Date strings**: `YYYYMMDD` for TDX history endpoints (e.g., `20241108`), `YYYY-MM-DD` for HTTP query params.
 
-- **K-line types** accepted in `type=` query param: `minute1`, `minute5`, `minute15`, `minute30`, `hour`, `day`, `week`, `month`. Day/week/month return 前复权 (THS source) by default via `getQfqKlineDay` in `web/server.go`; minutes are unadjusted. Failure to reach `d.10jqka.com.cn` silently falls back to raw TDX data.
+- **K-line types** accepted in `type=` query param: `minute1`, `minute5`, `minute15`, `minute30`, `hour`, `day`, `week`, `month`. Day/week/month return 前复权 (THS source) by default via `getQfqKlineDay` in `web/server.go`; minutes are unadjusted. Failure to reach `d.10jqka.com.cn` silently falls back to raw TDX data. `/api/kline-history-qfq` 支持 `day`/`week`/`month`,使用本地 gbbq 事件计算前复权,不依赖外部 HTTP;需 gbbq 缓存已填充。
 
 - **Kline full-history endpoints** `/api/kline-all/tdx` and `/api/kline-all/ths` return `{ count, list, meta: { source, type, batch_limit, notes } }`. TDX底层单次返回最多 800 条 — the server concatenates batches. Set a generous client timeout (1–5s for long-history symbols).
 
@@ -154,6 +154,7 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/kline-history?code=&type=&start_date=&end_date=` - **修复了日期范围过滤,日/周/月走同花顺前复权(原始语义)**,**仅服务个股**;`Amount` 恒为 0,价格曲线连续无缝
   - `GET /api/kline-history-tdx?code=&type=&start_date=&end_date=` - 走通达信原始(不复权)数据;`Amount` 字段有真实值,除权日跳空
   - `GET /api/kline-history-ths?code=&type=&start_date=&end_date=` - `/api/kline-history` 的显式命名别名,语义一致(同花顺前复权)
+  - `GET /api/kline-history-qfq?code=&type=&start_date=&end_date=` - 仿射前复权数据,使用 TDX 原始 K 线 + gbbq 事件本地计算,与 THS QFQ 结果一致但不依赖外部 HTTP;gbbq 缓存必须已填充(否则返回错误,需先 `POST /api/gbbq/refresh`);`Amount` 有真实调整值(优于 THS 的 Amount=0)
   - `GET /api/market-snapshot` - 全市场 5300+ 只股票当日 OHLCV 断面(`client.GetDaySnapshot`,**同步阻塞** 4-15 分钟,客户端要 `curl -m 900`);`tdx-api` 纯中转,不复权/不计算/不入库
   - `GET /api/health` - 进程级健康检查(PLAN_v2 §2.3.3 增强版):返回 `status` / `time`(unix 秒) / `uptime_seconds` / `gbbq_cache_size` / `goroutines` / `memory_mb`;已切到标准信封,给 docker healthcheck / k8s liveness 用
   - `GET /api/ready` - 就绪检查(PLAN_v2 §2.3.4 新增):返回 `{ready:true, uptime_seconds}`;gbbq 缓存是否为空不再阻塞 ready,给 k8s readiness probe / 反向代理 upstream 用
