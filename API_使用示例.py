@@ -1,688 +1,769 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TDX股票数据API使用示例
+TDX 通达信股票数据 API 使用示例 (完整版)
+===========================================
 
-演示如何使用所有API接口获取股票数据
+覆盖全部 40 个 HTTP 端点，按功能分为 10 组。
+适用于 tdx-api v2 (2025-11+)，对应 README 中的 36 个端点 + tasks 相关 4 个。
+
+环境要求: Python 3.8+, `pip install requests`
+
+使用方式:
+    python API_使用示例.py              # 运行所有示例
+    python API_使用示例.py --quick      # 只跑核心 10 个端点
+    python API_使用示例.py --slow       # 包含耗时端点 (market-snapshot 等)
 """
 
 import requests
 import json
+import sys
+import os
 from datetime import datetime
 
-# 配置
-BASE_URL = "http://localhost:8080"  # 修改为你的服务器地址
 
+# ─────────────────────────── 配置 ───────────────────────────
+BASE_URL = os.environ.get("TDX_API_URL", "http://localhost:8080")
+TIMEOUT_DEFAULT = 10          # 秒，普通请求
+TIMEOUT_LONG = 30             # 秒，kline-all 等批量请求
+TIMEOUT_GBBQ = 600            # 秒，gbbq 全量刷新
+TIMEOUT_SNAPSHOT = 900        # 秒，market-snapshot
+
+
+# ─────────────────────────── 客户端 ───────────────────────────
 class StockAPI:
-    """股票数据API客户端"""
-    
-    def __init__(self, base_url=BASE_URL):
-        self.base_url = base_url
-    
-    def get_quote(self, code):
-        """获取五档行情"""
-        url = f"{self.base_url}/api/quote?code={code}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-    
-    def get_kline(self, code, ktype='day', limit=100):
-        """获取K线数据"""
-        url = f"{self.base_url}/api/kline?code={code}&type={ktype}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']['List']
-        return None
-    
-    def get_minute(self, code, date=None):
-        """获取分时数据（返回包含date/Count/List的字典）"""
-        url = f"{self.base_url}/api/minute?code={code}"
-        if date:
-            url += f"&date={date}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-    
-    def get_trade(self, code, date=None):
-        """获取分时成交"""
-        url = f"{self.base_url}/api/trade?code={code}"
-        if date:
-            url += f"&date={date}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']['List']
-        return None
-    
-    def search(self, keyword):
-        """搜索股票"""
-        url = f"{self.base_url}/api/search?keyword={keyword}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-    
-    def get_stock_info(self, code):
-        """获取股票综合信息"""
-        url = f"{self.base_url}/api/stock-info?code={code}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-    
-    def get_all_codes(self, exchange='all'):
-        """获取股票代码列表"""
-        url = f"{self.base_url}/api/codes?exchange={exchange}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-    
-    def batch_get_quote(self, codes):
-        """批量获取行情"""
-        url = f"{self.base_url}/api/batch-quote"
-        response = requests.post(url, json={'codes': codes})
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+    """TDX 股票数据 API 客户端 — 覆盖全部 40 个端点。"""
 
-    def get_etf_list(self, exchange=None, limit=None):
-        """获取ETF基金列表"""
-        params = {}
-        if exchange:
-            params['exchange'] = exchange
-        if limit:
-            params['limit'] = limit
-        url = f"{self.base_url}/api/etf"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+    def __init__(self, base_url=BASE_URL):
+        self.base_url = base_url.rstrip("/")
+        self._s = requests.Session()
+        self._s.headers.setdefault("User-Agent", "tdx-api-client/2.0")
+
+    # ═══════════════════════════════════════════════════════════
+    # 工具方法
+    # ═══════════════════════════════════════════════════════════
+
+    def _get(self, path, params=None, timeout=TIMEOUT_DEFAULT):
+        r = self._s.get(f"{self.base_url}{path}", params=params, timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+        if body["code"] != 0:
+            raise RuntimeError(body.get("message", "未知错误"))
+        return body["data"]
+
+    def _post(self, path, json_body=None, timeout=TIMEOUT_DEFAULT):
+        r = self._s.post(f"{self.base_url}{path}", json=json_body or {}, timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+        if body["code"] != 0:
+            raise RuntimeError(body.get("message", "未知错误"))
+        return body["data"]
+
+    # ═══════════════════════════════════════════════════════════
+    # 1. 实时行情
+    # ═══════════════════════════════════════════════════════════
+
+    def get_quote(self, code):
+        """
+        获取五档行情（单只或逗号分隔的多只）。
+        code: "000001" 或 "000001,600000"
+        返回: list[dict]，每只股票的买一~买五、卖一~卖五及 OHLCV
+        """
+        return self._get("/api/quote", {"code": code})
+
+    def batch_get_quote(self, codes):
+        """
+        批量获取行情，最多 50 只。
+        codes: ["000001", "600000", ...]
+        返回: list[dict]
+        """
+        if len(codes) > 50:
+            raise RuntimeError("一次最多 50 只")
+        return self._post("/api/batch-quote", {"codes": codes})
+
+    # ═══════════════════════════════════════════════════════════
+    # 2. K 线数据
+    # ═══════════════════════════════════════════════════════════
+
+    def get_kline(self, code, ktype="day", limit=100):
+        """
+        获取最近 N 条 K 线。
+        ktype: minute1 | minute5 | minute15 | minute30 | hour | day | week | month
+        注意:
+          - 日/周/月 走同花顺 **前复权**，价格连续无跳空
+          - 分钟/小时 走 TDX 原始数据，不复权
+          - 需要不复权的日 K → 用 get_kline_history_tdx()
+        返回: {"Count": int, "List": [...]}
+        """
+        return self._get("/api/kline", {"code": code, "type": ktype})
+
+    def get_kline_all_tdx(self, code, ktype="day", limit=0):
+        """
+        获取股票全量历史 K 线（TDX 原始不复权数据）。
+        ktype: minute1|minute5|minute15|minute30|hour|day|week|month|quarter|year
+        limit: >0 时截取最近 N 条；0 表示全部
+        返回: {"count": int, "list": [...], "meta": {"source":"tdx", ...}}
+        注意: Amount 字段有真实值，除权日有跳空
+        """
+        params = {"code": code, "type": ktype}
+        if limit > 0:
+            params["limit"] = limit
+        return self._get("/api/kline-all/tdx", params, timeout=TIMEOUT_LONG)
+
+    def get_kline_all_ths(self, code, ktype="day", limit=0):
+        """
+        获取股票全量历史 K 线（同花顺前复权）。
+        ktype: day | week | month （同花顺只支持这三种）
+        limit: >0 时截取最近 N 条；0 表示全部
+        返回: {"count": int, "list": [...], "meta": {"source":"ths", ...}}
+        注意: Amount 字段恒为 0；价格已前复权，长期回测用
+        """
+        params = {"code": code, "type": ktype}
+        if limit > 0:
+            params["limit"] = limit
+        return self._get("/api/kline-all/ths", params, timeout=TIMEOUT_LONG)
+
+    def get_kline_history(self, code, ktype="day", start_date=None, end_date=None):
+        """
+        获取指定日期范围的 K 线（同花顺前复权）。
+        日/周/月走前复权；不支持分钟线。
+        返回: {"Count": int, "List": [...]}
+        """
+        params = {"code": code, "type": ktype}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        return self._get("/api/kline-history", params, timeout=TIMEOUT_LONG)
+
+    def get_kline_history_tdx(self, code, ktype="day", start_date=None, end_date=None):
+        """
+        获取指定日期范围的 K 线（TDX 原始不复权）。
+        支持全部 K 线类型；Amount 有真实值。
+        返回: {"Count": int, "List": [...]}
+        """
+        params = {"code": code, "type": ktype}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        return self._get("/api/kline-history-tdx", params, timeout=TIMEOUT_LONG)
+
+    def get_kline_history_ths(self, code, ktype="day", start_date=None, end_date=None):
+        """同 get_kline_history，显式别名。"""
+        return self.get_kline_history(code, ktype, start_date, end_date)
+
+    # ═══════════════════════════════════════════════════════════
+    # 3. 指数 / 板块
+    # ═══════════════════════════════════════════════════════════
+
+    def get_index(self, code, ktype="day", limit=100):
+        """
+        获取指数最近 N 条 K 线。
+        code: 必须带前缀 "sh000001" / "sz399001"
+        ktype: minute1|minute5|minute15|minute30|hour|day|week|month
+        limit: 1-800
+        返回: {"Count": int, "List": [...]}
+        """
+        params = {"code": code, "type": ktype, "limit": limit}
+        return self._get("/api/index", params)
+
+    def get_index_all(self, code, ktype="day", limit=0):
+        """
+        获取指数全量历史 K 线。
+        ktype: minute1|minute5|minute15|minute30|hour|day|week|month|quarter|year
+        返回: {"count": int, "list": [...]}
+        """
+        params = {"code": code, "type": ktype}
+        if limit > 0:
+            params["limit"] = limit
+        return self._get("/api/index/all", params, timeout=TIMEOUT_LONG)
+
+    def get_kline_index_history(self, code, start_date=None, end_date=None):
+        """
+        获取指数/板块历史日 K（指定日期范围）。
+        code: 必须显式带交易所前缀 "sh000001"
+        返回: {"count": int, "list": [...]}
+        """
+        params = {"code": code}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        return self._get("/api/kline-index-history", params, timeout=TIMEOUT_LONG)
+
+    # ═══════════════════════════════════════════════════════════
+    # 4. 分时 & 成交
+    # ═══════════════════════════════════════════════════════════
+
+    def get_minute(self, code, date=None):
+        """
+        获取分时数据。
+        date: 可选 "20260103" 或 "2026-01-03"，缺省 = 今日
+        返回: {"date": str, "Count": int, "List": [...]}
+        """
+        params = {"code": code}
+        if date:
+            params["date"] = date
+        return self._get("/api/minute", params)
+
+    def get_trade(self, code, date=None):
+        """
+        获取分时成交。
+        date: 可选，缺省 = 今日（最近 1800 条）
+        返回: {"Count": int, "List": [...]}
+        """
+        params = {"code": code}
+        if date:
+            params["date"] = date
+        return self._get("/api/trade", params)
 
     def get_trade_history(self, code, date, start=0, count=2000):
-        """获取历史分时成交（分页）"""
-        params = {'code': code, 'date': date}
-        if start:
-            params['start'] = start
-        if count:
-            params['count'] = count
-        url = f"{self.base_url}/api/trade-history"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+        """
+        获取历史分时成交（分页）。
+        date: "20260103" 或 "2026-01-03"
+        count: 最大 2000
+        返回: {"Count": int, "List": [...]}
+        """
+        params = {"code": code, "date": date, "start": start, "count": count}
+        return self._get("/api/trade-history", params)
+
+    def get_trade_history_full(self, code, start_date=None, end_date=None, limit=0,
+                               before=None, include_today=False):
+        """
+        获取完整历史分时成交（自动按交易日遍历）。
+        start_date/end_date: 缺省 start_date=前30天, end_date=今天
+        before: 取该日期之前的成交（与 end_date 互斥）
+        include_today: 是否包含今日实时成交
+        返回: {"code","start_date","end_date","count","truncated","covered_dates","list"}
+        """
+        params = {"code": code}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if before:
+            params["before"] = before
+        if include_today:
+            params["include_today"] = "true"
+        if limit > 0:
+            params["limit"] = limit
+        return self._get("/api/trade-history/full", params, timeout=TIMEOUT_LONG)
 
     def get_minute_trade_all(self, code, date=None):
-        """获取全天分时成交"""
-        params = {'code': code}
+        """
+        获取全天分时成交（不分页）。
+        date: 可选，缺省 = 今日
+        返回: {"Count": int, "List": [...]}
+        """
+        params = {"code": code}
         if date:
-            params['date'] = date
-        url = f"{self.base_url}/api/minute-trade-all"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+            params["date"] = date
+        return self._get("/api/minute-trade-all", params)
 
-    def get_workday(self, date=None, count=None):
-        """查询交易日信息"""
+    # ═══════════════════════════════════════════════════════════
+    # 5. 搜索 & 基本信息
+    # ═══════════════════════════════════════════════════════════
+
+    def search(self, keyword):
+        """
+        搜索股票（代码/名称模糊匹配，最多返回 50 条）。
+        keyword: "平安" / "000001"
+        返回: [{"code","name","exchange"}, ...]
+        """
+        return self._get("/api/search", {"keyword": keyword})
+
+    def get_stock_info(self, code):
+        """
+        获取股票综合信息（行情 + 近30天日K + 今日分时）。
+        返回: {"quote":{...}, "kline_day":{...}, "minute":{...}}
+        """
+        return self._get("/api/stock-info", {"code": code})
+
+    # ═══════════════════════════════════════════════════════════
+    # 6. 代码列表
+    # ═══════════════════════════════════════════════════════════
+
+    def get_all_codes(self, exchange="all"):
+        """
+        获取股票代码列表（按交易所筛选，含名称）。
+        exchange: "sh" | "sz" | "bj" | "all"
+        返回: {"total": int, "exchanges": {"sh":n,"sz":n,"bj":n}, "codes":[...]}
+        """
+        return self._get("/api/codes", {"exchange": exchange})
+
+    def get_stock_codes(self, limit=0, with_prefix=True):
+        """
+        获取纯股票代码列表（不含名称）。
+        limit: >0 截取
+        with_prefix: 是否包含 sh/sz/bj 前缀
+        返回: {"count": int, "list": ["sh000001", ...]}
+        """
         params = {}
-        if date:
-            params['date'] = date
-        if count:
-            params['count'] = count
-        url = f"{self.base_url}/api/workday"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+        if limit > 0:
+            params["limit"] = limit
+        if not with_prefix:
+            params["prefix"] = "false"
+        return self._get("/api/stock-codes", params)
 
-    def create_pull_kline_task(self, codes=None, tables=None, limit=None, start_date=None, directory=None):
-        """创建批量K线入库任务"""
-        payload = {}
-        if codes:
-            payload['codes'] = codes
-        if tables:
-            payload['tables'] = tables
+    def get_etf_codes(self, limit=0, with_prefix=True):
+        """
+        获取 ETF 代码列表。
+        返回: {"count": int, "list": ["sh510050", ...]}
+        """
+        params = {}
+        if limit > 0:
+            params["limit"] = limit
+        if not with_prefix:
+            params["prefix"] = "false"
+        return self._get("/api/etf-codes", params)
+
+    def get_etf_list(self, exchange=None, limit=None):
+        """
+        获取 ETF 列表（含名称和最新价）。
+        exchange: "sh"|"sz"|"all"，缺省 = 全部
+        返回: {"total": int, "list": [{"code","name","exchange","last_price"},...]}
+        """
+        params = {}
+        if exchange:
+            params["exchange"] = exchange
         if limit:
-            payload['limit'] = limit
+            params["limit"] = limit
+        return self._get("/api/etf", params)
+
+    # ═══════════════════════════════════════════════════════════
+    # 7. 除权除息 & 股本变迁 (gbbq)
+    # ═══════════════════════════════════════════════════════════
+
+    def refresh_gbbq(self, codes=None):
+        """
+        主动刷新 gbbq 缓存。⚠️ 同步阻塞！
+        codes: None → 全量（11000+ 只，约 9-15 分钟，需客户端 -m 900）
+               ["sh600000", ...] → 单只/批量秒级
+        返回: {"success_count": int, "failed_count": int, "failed": {...}, "duration_ms": int}
+        """
+        body = {}
+        if codes:
+            body["codes"] = codes
+        return self._post("/api/gbbq/refresh", body, timeout=TIMEOUT_GBBQ)
+
+    def get_gbbq(self, code, start_date=None, end_date=None):
+        """
+        获取个股股本变迁/除权除息记录。
+        注意: 必须先用 refresh_gbbq([code]) 拉取该股票数据。
+        返回: {
+            "code": "sh600000",
+            "equity": [{"date","category","float","total"}, ...],   # 股本变迁
+            "xrxd":   [{"date","fenhong","peigujia","songzhuangu","peigu"}, ...]  # 除权除息
+        }
+        """
+        params = {"code": code}
         if start_date:
-            payload['start_date'] = start_date
-        if directory:
-            payload['dir'] = directory
-        url = f"{self.base_url}/api/tasks/pull-kline"
-        response = requests.post(url, json=payload or {})
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']['task_id']
-        raise RuntimeError(data.get('message', '创建任务失败'))
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        return self._get("/api/gbbq", params)
 
-    def create_pull_trade_task(self, code, start_year=None, end_year=None, directory=None):
-        """创建分时成交入库任务"""
-        payload = {'code': code}
-        if start_year:
-            payload['start_year'] = start_year
-        if end_year:
-            payload['end_year'] = end_year
-        if directory:
-            payload['dir'] = directory
-        url = f"{self.base_url}/api/tasks/pull-trade"
-        response = requests.post(url, json=payload)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']['task_id']
-        raise RuntimeError(data.get('message', '创建任务失败'))
+    def get_turnover(self, code, start_date=None, end_date=None):
+        """
+        获取个股换手率序列（%）。
+        换手率 = 成交量(手)×100 / 流通股本 ×100
+        依赖 gbbq 缓存，缓存空时 turnover=0。
+        返回: {"code": str, "count": int, "list": [{"date","turnover","float"}, ...]}
+        """
+        params = {"code": code}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        return self._get("/api/turnover", params)
 
-    def list_tasks(self):
-        """查询所有任务"""
-        url = f"{self.base_url}/api/tasks"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return []
+    # ═══════════════════════════════════════════════════════════
+    # 8. 市场统计
+    # ═══════════════════════════════════════════════════════════
 
-    def get_task(self, task_id):
-        """查询任务详情"""
-        url = f"{self.base_url}/api/tasks/{task_id}"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-
-    def cancel_task(self, task_id):
-        """取消任务"""
-        url = f"{self.base_url}/api/tasks/{task_id}/cancel"
-        response = requests.post(url)
-        data = response.json()
-        return data
+    def get_market_stats(self):
+        """
+        获取各交易所涨跌家数统计。
+        返回: {
+            "sh": {"total","up","down","flat"},
+            "sz": {...},
+            "bj": {...},
+            "update_time": str
+        }
+        """
+        return self._get("/api/market-stats")
 
     def get_market_count(self):
-        """获取市场证券数量"""
-        url = f"{self.base_url}/api/market-count"
-        response = requests.get(url)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+        """
+        获取各交易所证券数量。
+        返回: {"total": int, "exchanges": [{"exchange":"sh","count":n}, ...]}
+        """
+        return self._get("/api/market-count")
 
-    def get_stock_codes(self, limit=None, prefix=True):
-        """获取全部股票代码"""
+    def get_market_snapshot(self):
+        """
+        获取全市场 5300+ 只股票当日 OHLCV 断面。⚠️ 同步阻塞 4-15 分钟！
+        建议: 每天 16:00 后调用，避开 15:00 数据回填期。
+        返回: {"date":str, "count":int, "list":[{code,open,high,low,close,volume,last_close,change_pct}]}
+        """
+        return self._get("/api/market-snapshot", timeout=TIMEOUT_SNAPSHOT)
+
+    # ═══════════════════════════════════════════════════════════
+    # 9. 交易日 & 收益计算
+    # ═══════════════════════════════════════════════════════════
+
+    def get_workday(self, date=None, count=1):
+        """
+        查询某日是否为交易日，并获取前后交易日。
+        count: 前后各取 count 个交易日（最大 30）
+        返回: {
+            "date": {"iso","numeric"},
+            "is_workday": bool,
+            "next": [...],      # 之后 count 个交易日
+            "previous": [...]   # 之前 count 个交易日
+        }
+        """
         params = {}
-        if limit:
-            params['limit'] = limit
-        if not prefix:
-            params['prefix'] = 'false'
-        url = f"{self.base_url}/api/stock-codes"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-
-    def get_etf_codes(self, limit=None, prefix=True):
-        """获取全部ETF代码"""
-        params = {}
-        if limit:
-            params['limit'] = limit
-        if not prefix:
-            params['prefix'] = 'false'
-        url = f"{self.base_url}/api/etf-codes"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-
-    def get_kline_all(self, code, ktype='day', limit=None):
-        """获取股票全量历史K线"""
-        params = {'code': code, 'type': ktype}
-        if limit:
-            params['limit'] = limit
-        url = f"{self.base_url}/api/kline-all"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-
-    def get_index_all(self, code, ktype='day', limit=None):
-        """获取指数全量历史K线"""
-        params = {'code': code, 'type': ktype}
-        if limit:
-            params['limit'] = limit
-        url = f"{self.base_url}/api/index/all"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
-
-    def get_trade_history_full(self, code, before=None, limit=None):
-        """获取上市以来分时成交"""
-        params = {'code': code}
-        if before:
-            params['before'] = before
-        if limit:
-            params['limit'] = limit
-        url = f"{self.base_url}/api/trade-history/full"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+        if date:
+            params["date"] = date
+        if count > 1:
+            params["count"] = count
+        return self._get("/api/workday", params)
 
     def get_workday_range(self, start, end):
-        """获取交易日范围"""
-        params = {'start': start, 'end': end}
-        url = f"{self.base_url}/api/workday/range"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+        """
+        获取指定日期范围内的交易日列表。
+        start/end: "20260101" 或 "2026-01-01"
+        返回: {"count": int, "list": [{"iso","numeric"}, ...]}
+        """
+        params = {"start": start, "end": end}
+        return self._get("/api/workday/range", params)
 
-    def get_income(self, code, start_date, days=None):
-        """收益区间分析"""
-        params = {'code': code, 'start_date': start_date}
+    def get_income(self, code, start_date, days=""):
+        """
+        计算相对指定买入日的 N 日收益率。
+        start_date: "2025-01-15" 买入日
+        days: "5,10,20,60,120" 逗号分隔，缺省默认使用 [5,10,20,60,120]
+        返回: {"count": int, "list": [{"offset","time","rise","rise_rate","source","current"}, ...]}
+        """
+        params = {"code": code, "start_date": start_date}
         if days:
-            params['days'] = ",".join(str(d) for d in days)
-        url = f"{self.base_url}/api/income"
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data['code'] == 0:
-            return data['data']
-        return None
+            params["days"] = days
+        return self._get("/api/income", params)
+
+    # ═══════════════════════════════════════════════════════════
+    # 10. 任务 & 服务器状态
+    # ═══════════════════════════════════════════════════════════
+
+    def create_pull_kline_task(self, codes=None, tables=None, limit=None,
+                               start_date=None, directory=None):
+        """
+        创建 K 线批量入库任务。
+        ⚠️ 写入 tdx-api 本地 SQLite (./data/database/kline/{code}.db)。
+        不是你自己的外部数据库！
+        如需自己写 MySQL → 用 get_kline_all_tdx/get_kline_all_ths 拉取后自行入库。
+
+        codes: 股票代码列表，缺省 = 全市场
+        tables: K线类型 ["day","minute","5minute","15minute","30minute","hour",
+                         "week","month","quarter","year"]，缺省 = ["day"]
+        limit: 并发协程数，缺省 = 1
+        start_date: "2020-01-01"，缺省 = 上市首日
+        返回: task_id (str)
+        """
+        body = {}
+        if codes:
+            body["codes"] = codes
+        if tables:
+            body["tables"] = tables
+        if limit:
+            body["limit"] = limit
+        if start_date:
+            body["start_date"] = start_date
+        if directory:
+            body["dir"] = directory
+        return self._post("/api/tasks/pull-kline", body)
+
+    def create_pull_trade_task(self, code, start_year=None, end_year=None, directory=None):
+        """
+        创建分时成交入库任务。
+        ⚠️ 写入 tdx-api 本地 SQLite (./data/database/trade/{code}.db)。
+        start_year/end_year: 年份范围，缺省 = 全部
+        返回: task_id (str)
+        """
+        body = {"code": code}
+        if start_year:
+            body["start_year"] = start_year
+        if end_year:
+            body["end_year"] = end_year
+        if directory:
+            body["dir"] = directory
+        return self._post("/api/tasks/pull-trade", body)
+
+    def list_tasks(self):
+        """
+        列出所有异步任务。
+        返回: [{"id","type","status","started_at","ended_at","error"}, ...]
+        """
+        return self._get("/api/tasks")
+
+    def get_task(self, task_id):
+        """
+        查询任务详情 / 状态。
+        返回: {"id","type","status","started_at","ended_at","error"}
+        """
+        return self._get(f"/api/tasks/{task_id}")
+
+    def cancel_task(self, task_id):
+        """
+        取消正在运行的任务。
+        返回: {"id","type","status","started_at","ended_at"}
+        """
+        return requests.delete(
+            f"{self.base_url}/api/tasks/{task_id}", timeout=TIMEOUT_DEFAULT
+        ).json()["data"]
+
+    # ═══════════════════════════════════════════════════════════
+    # 11. 服务器状态
+    # ═══════════════════════════════════════════════════════════
+
+    def get_server_status(self):
+        """
+        获取服务器基本状态。
+        返回: {"status","connected","version","uptime"}
+        """
+        return self._get("/api/server-status")
+
+    def health_check(self):
+        """
+        健康检查（进程指标）。
+        返回: {"status","time","uptime_seconds","gbbq_cache_size","goroutines","memory_mb"}
+        """
+        return self._get("/api/health")
+
+    def ready_check(self):
+        """
+        就绪检查（服务能否接收请求）。
+        返回: {"ready": bool, "uptime_seconds": int}
+        """
+        return self._get("/api/ready")
 
 
-def example1_get_quote():
-    """示例1: 获取实时行情"""
-    print("\n" + "="*50)
-    print("示例1: 获取实时行情")
-    print("="*50)
-    
-    api = StockAPI()
-    quote = api.get_quote("000001")
-    
-    if quote and len(quote) > 0:
-        q = quote[0]
-        last_price = q['K']['Close'] / 1000  # 转为元
-        open_price = q['K']['Open'] / 1000
-        high_price = q['K']['High'] / 1000
-        low_price = q['K']['Low'] / 1000
-        
-        print(f"股票代码: {q['Code']}")
-        print(f"最新价: {last_price:.2f}元")
-        print(f"开盘价: {open_price:.2f}元")
-        print(f"最高价: {high_price:.2f}元")
-        print(f"最低价: {low_price:.2f}元")
-        print(f"成交量: {q['TotalHand']}手")
-        print(f"成交额: {q['Amount']/1000:.2f}元")
-        
-        print("\n买五档:")
-        for i, level in enumerate(q['BuyLevel']):
-            price = level['Price'] / 1000
-            volume = level['Number'] / 100
-            print(f"  买{i+1}: {price:.2f}元  {volume:.0f}手")
-        
-        print("\n卖五档:")
-        for i, level in enumerate(q['SellLevel']):
-            price = level['Price'] / 1000
-            volume = level['Number'] / 100
-            print(f"  卖{i+1}: {price:.2f}元  {volume:.0f}手")
+# ═══════════════════════════════════════════════════════════════
+# 演示运行
+# ═══════════════════════════════════════════════════════════════
+
+def color(text, code="36"):
+    """简单 ANSI 着色。"""
+    return f"\033[{code}m{text}\033[0m"
 
 
-def example2_get_kline():
-    """示例2: 获取K线数据并分析"""
-    print("\n" + "="*50)
-    print("示例2: 获取K线数据")
-    print("="*50)
-    
-    api = StockAPI()
-    klines = api.get_kline("000001", "day")
-    
-    if klines and len(klines) > 0:
-        print(f"获取到 {len(klines)} 条日K线数据（日/周/月为前复权）")
-        
-        # 显示最近5天的数据
-        print("\n最近5天K线:")
-        for k in klines[:5]:
-            date = k['Time'][:10]
-            open_p = k['Open'] / 1000
-            close_p = k['Close'] / 1000
-            high_p = k['High'] / 1000
-            low_p = k['Low'] / 1000
-            volume = k['Volume']
-            
-            change = close_p - open_p
-            change_pct = (change / open_p * 100) if open_p > 0 else 0
-            
-            print(f"{date}: 开{open_p:.2f} 收{close_p:.2f} "
-                  f"高{high_p:.2f} 低{low_p:.2f} "
-                  f"量{volume}手 {change_pct:+.2f}%")
-        
-        # 计算简单移动平均线
-        if len(klines) >= 5:
-            ma5 = sum([k['Close'] for k in klines[:5]]) / 5 / 1000
-            print(f"\nMA5: {ma5:.2f}元")
-
-
-def example3_search_stock():
-    """示例3: 搜索股票"""
-    print("\n" + "="*50)
-    print("示例3: 搜索股票")
-    print("="*50)
-    
-    api = StockAPI()
-    results = api.search("平安")
-    
-    if results:
-        print(f"找到 {len(results)} 只股票:")
-        for stock in results:
-            print(f"  {stock['code']} ({stock.get('exchange','')}) - {stock['name']}")
-
-
-def example4_batch_quote():
-    """示例4: 批量获取行情"""
-    print("\n" + "="*50)
-    print("示例4: 批量获取行情")
-    print("="*50)
-    
-    api = StockAPI()
-    codes = ["000001", "600519", "601318"]
-    quotes = api.batch_get_quote(codes)
-    
-    if quotes:
-        print("批量行情数据:")
-        for q in quotes:
-            code = q['Code']
-            price = q['K']['Close'] / 1000
-            volume = q['TotalHand']
-            print(f"  {code}: {price:.2f}元, 成交量{volume}手")
-
-
-def example5_market_analysis():
-    """示例5: 市场分析（涨跌统计）"""
-    print("\n" + "="*50)
-    print("示例5: 市场分析")
-    print("="*50)
-    
-    api = StockAPI()
-    
-    # 获取部分股票进行分析
-    all_codes = api.get_all_codes('sh')
-    if all_codes:
-        print(f"上海市场共 {all_codes['exchanges']['sh']} 只股票")
-        
-        # 随机取10只股票分析
-        sample_codes = [c['code'] for c in all_codes['codes'][:10]]
-        quotes = api.batch_get_quote(sample_codes)
-        
-        if quotes:
-            up_count = 0
-            down_count = 0
-            flat_count = 0
-            
-            for q in quotes:
-                last = q['K']['Last']
-                close = q['K']['Close']
-                
-                if close > last:
-                    up_count += 1
-                elif close < last:
-                    down_count += 1
-                else:
-                    flat_count += 1
-            
-            print(f"\n样本分析（{len(quotes)}只）:")
-            print(f"  上涨: {up_count}只")
-            print(f"  下跌: {down_count}只")
-            print(f"  平盘: {flat_count}只")
-
-
-def example6_technical_analysis():
-    """示例6: 技术分析示例"""
-    print("\n" + "="*50)
-    print("示例6: 技术分析")
-    print("="*50)
-    
-    api = StockAPI()
-    klines = api.get_kline("000001", "day")
-    
-    if klines and len(klines) >= 20:
-        # 计算MA5, MA10, MA20
-        closes = [k['Close'] / 1000 for k in klines]
-        
-        ma5 = sum(closes[:5]) / 5
-        ma10 = sum(closes[:10]) / 10
-        ma20 = sum(closes[:20]) / 20
-        
-        current_price = closes[0]
-        
-        print("技术指标:")
-        print(f"  当前价: {current_price:.2f}元")
-        print(f"  MA5:   {ma5:.2f}元")
-        print(f"  MA10:  {ma10:.2f}元")
-        print(f"  MA20:  {ma20:.2f}元")
-        
-        # 简单趋势判断
-        if ma5 > ma10 > ma20:
-            print("\n趋势判断: 多头排列 📈")
-        elif ma5 < ma10 < ma20:
-            print("\n趋势判断: 空头排列 📉")
-        else:
-            print("\n趋势判断: 震荡盘整 ➡️")
-
-
-def example7_realtime_monitor():
-    """示例7: 实时监控（模拟）"""
-    print("\n" + "="*50)
-    print("示例7: 实时监控")
-    print("="*50)
-    
-    api = StockAPI()
-    watchlist = ["000001", "600519", "601318"]
-    
-    print(f"监控股票: {', '.join(watchlist)}")
-    print("\n实时行情（刷新一次）:")
-    
-    quotes = api.batch_get_quote(watchlist)
-    if quotes:
-        print(f"{'代码':<10} {'最新价':<10} {'涨跌幅':<10} {'成交量'}")
-        print("-" * 50)
-        
-        for q in quotes:
-            code = q['Code']
-            last = q['K']['Last'] / 1000
-            close = q['K']['Close'] / 1000
-            volume = q['TotalHand']
-            
-            change_pct = ((close - last) / last * 100) if last > 0 else 0
-            
-            print(f"{code:<10} {close:<10.2f} {change_pct:+.2f}%  {volume:>10}手")
-
-
-def example8_data_tasks():
-    """示例8: 批量入库任务管理"""
-    print("\n" + "="*50)
-    print("示例8: 批量入库任务")
-    print("="*50)
-    
-    api = StockAPI()
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    try:
-        kline_task = api.create_pull_kline_task(
-            codes=["000001", "600519"],
-            tables=["day", "week"],
-            limit=2,
-            start_date=today
-        )
-        print(f"创建K线入库任务成功，任务ID: {kline_task}")
-    except Exception as err:
-        print(f"创建K线任务失败: {err}")
-        kline_task = None
-    
-    try:
-        trade_task = api.create_pull_trade_task("000001", start_year=2020)
-        print(f"创建分时成交任务成功，任务ID: {trade_task}")
-    except Exception as err:
-        print(f"创建成交任务失败: {err}")
-        trade_task = None
-    
-    tasks = api.list_tasks()
-    print(f"\n当前任务总数: {len(tasks)}")
-    for task in tasks:
-        print(f"  - {task['id']} [{task['type']}] 状态: {task['status']}")
-    
-    if kline_task:
-        detail = api.get_task(kline_task)
-        if detail:
-            print(f"\nK线任务详情: 状态={detail['status']} 开始于 {detail['started_at']}")
-
-
-def example9_data_services():
-    """示例9: 新增数据服务接口"""
-    print("\n" + "="*50)
-    print("示例9: 数据服务接口")
-    print("="*50)
-
+def run_examples(mode="full"):
+    """运行示例。mode: full | quick | slow"""
     api = StockAPI()
 
-    etfs = api.get_etf_list(limit=5)
-    if etfs:
-        print(f"ETF样本({etfs['total']}):")
-        for item in etfs['list']:
-            print(f"  {item['exchange']} {item['code']} - {item['name']}")
+    # ── 公共变量 ──
+    STOCK = "000001"           # 平安银行
+    INDEX = "sh000001"         # 上证指数
+    STOCK_FULL = "sh600000"    # 浦发银行（用于 gbbq）
 
-    workday_info = api.get_workday(count=1)
-    trade_date = None
-    if workday_info:
-        base = workday_info['date']['numeric']
-        if workday_info['is_workday']:
-            trade_date = base
-        elif workday_info['previous']:
-            trade_date = workday_info['previous'][0]['numeric']
+    examples = []
+    skipped = []
 
-    if trade_date:
-        history = api.get_trade_history("000001", trade_date, count=100)
-        if history and history.get('List'):
-            print(f"\n历史分时成交({trade_date}) 返回 {history['Count']} 条，展示前3条：")
-            for item in history['List'][:3]:
-                print(f"  {item['Time']}  价:{item['Price']/1000:.2f}  量:{item['Volume']}")
+    def add(name, fn, *args, **kw):
+        examples.append((name, fn, args, kw))
 
-        minute_all = api.get_minute_trade_all("000001", trade_date)
-        if minute_all:
-            print(f"\n全天成交合计: {minute_all.get('Count', 0)} 条记录")
+    # 1. 实时行情
+    add("五档行情", api.get_quote, STOCK)
+    add("批量行情", api.batch_get_quote, [STOCK, "600000"])
 
-        if workday_info and workday_info['next']:
-            next_day = workday_info['next'][0]['iso']
-        else:
-            next_day = "N/A"
-        print(f"\n下一个交易日: {next_day}")
+    # 2. K线
+    add("日K线(前复权)", api.get_kline, STOCK, "day")
+    add("分钟K线(不复权)", api.get_kline, STOCK, "minute5")
+    add("全量日K(TDX不复权)", api.get_kline_all_tdx, STOCK, "day", 5)
+    add("全量日K(同花顺前复权)", api.get_kline_all_ths, STOCK, "day", 5)
+    add("历史K线(THS前复权)", api.get_kline_history, STOCK, "day",
+        "2025-12-01", "2025-12-31")
+    add("历史K线(TDX不复权)", api.get_kline_history_tdx, STOCK, "day",
+        "2025-12-01", "2025-12-31")
+
+    # 3. 指数
+    add("指数日K", api.get_index, INDEX, "day", 5)
+    add("指数全量K", api.get_index_all, INDEX, "day", 5)
+    add("指数历史日K", api.get_kline_index_history, INDEX, "2025-12-01", "2025-12-31")
+
+    # 4. 分时 & 成交
+    add("分时数据", api.get_minute, STOCK)
+    add("分时成交", api.get_trade, STOCK)
+    add("全天分时成交", api.get_minute_trade_all, STOCK)
+
+    # 5. 搜索 & 信息
+    add("搜索股票", api.search, "平安")
+    add("股票综合信息", api.get_stock_info, STOCK)
+
+    # 6. 代码列表
+    add("代码列表(sh)", api.get_all_codes, "sh")
+    add("纯股票代码(前10)", api.get_stock_codes, 10)
+    add("ETF列表(前5)", api.get_etf_list, limit=5)
+
+    # 7. gbbq
+    add("单只gbbq刷新", api.refresh_gbbq, [STOCK_FULL])
+    add("查询gbbq记录", api.get_gbbq, STOCK_FULL)
+    add("换手率序列", api.get_turnover, STOCK_FULL, "2025-11-01", "2025-12-31")
+
+    # 8. 市场统计
+    add("市场统计", api.get_market_stats)
+    add("市场数量", api.get_market_count)
+
+    # 9. 交易日 & 收益
+    add("交易日查询", api.get_workday, "2026-06-03", 3)
+    add("交易日范围", api.get_workday_range, "2025-12-01", "2025-12-31")
+    add("收益率计算", api.get_income, STOCK, "2025-09-01", "5,10,20")
+
+    # 10. 服务器
+    add("服务器状态", api.get_server_status)
+    add("健康检查", api.health_check)
+    add("就绪检查", api.ready_check)
+
+    if mode == "slow":
+        add("全市场断面(⚠️ 4-15min)", api.get_market_snapshot)
+        add("全量gbbq刷新(⚠️ 9-15min)", api.refresh_gbbq)
     else:
-        print("\n未能确定可用的交易日，请检查交易日接口是否正常。")
+        skipped.append("全市场断面 GET /api/market-snapshot （加 --slow 才跑）")
+        skipped.append("全量gbbq刷新 POST /api/gbbq/refresh （加 --slow 才跑）")
+
+    if mode == "quick":
+        examples = examples[:10]  # 只跑前 10 个
+        skipped.append("… 其余 30+ 个端点（加 --full 跑全部）")
+
+    # ── 执行 ──
+    print(color("=" * 65, "1;36"))
+    print(color("  TDX API 使用示例", "1;36"))
+    print(color(f"  服务器: {BASE_URL}  模式: {mode}", "36"))
+    print(color("=" * 65, "1;36"))
+
+    ok = fail = 0
+    for i, (name, fn, args, kw) in enumerate(examples):
+        tag = f"[{i+1}/{len(examples)}]"
+        try:
+            data = fn(*args, **kw)
+            label = color(f"✓ {tag} {name}", "32")
+            print(f"{label}")
+
+            # 截断展示
+            if isinstance(data, dict):
+                keys = list(data.keys())[:5]
+                preview = f"  keys: {keys}"
+                if "count" in data:
+                    preview += f", count={data['count']}"
+                elif "Count" in data:
+                    preview += f", Count={data['Count']}"
+                elif "total" in data:
+                    preview += f", total={data['total']}"
+                print(color(preview, "90"))
+            elif isinstance(data, list):
+                n = len(data)
+                preview = f"  {n} items"
+                if n > 0 and isinstance(data[0], dict):
+                    preview += f", fields={list(data[0].keys())[:5]}"
+                print(color(preview, "90"))
+            ok += 1
+        except Exception as e:
+            label = color(f"✗ {tag} {name}", "31")
+            print(f"{label}")
+            print(color(f"  {type(e).__name__}: {e}", "31"))
+            fail += 1
+
+    if skipped:
+        print()
+        print(color("已跳过:", "33"))
+        for s in skipped:
+            print(color(f"  · {s}", "90"))
+
+    print()
+    print(color(f"结果: {ok} 通过, {fail} 失败", "1;36" if fail == 0 else "1;33"))
+
+    return fail == 0
 
 
-def example10_advanced_endpoints():
-    """示例10: 高级接口组合"""
-    print("\n" + "="*50)
-    print("示例10: 高级接口")
-    print("="*50)
+# ═══════════════════════════════════════════════════════════════
+# 快速参考 — 常用场景组合
+# ═══════════════════════════════════════════════════════════════
 
-    api = StockAPI()
+def print_cheatsheet():
+    """打印速查表。"""
+    print(color("""
+╔══════════════════════════════════════════════════════════════╗
+║                    常用场景速查表                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  📊 我要实时行情                                              ║
+║     api.get_quote("000001")                                  ║
+║     api.batch_get_quote(["000001","600000"])  # ≤50只         ║
+║                                                              ║
+║  📈 我要日K线                                                 ║
+║     看最近100天 (前复权)  → api.get_kline("000001")            ║
+║     全量历史 (前复权)     → api.get_kline_all_ths("000001")    ║
+║     全量历史 (不复权)     → api.get_kline_all_tdx("000001")    ║
+║     指定日期 (前复权)     → api.get_kline_history("000001")    ║
+║     指定日期 (不复权)     → api.get_kline_history_tdx("000001")║
+║                                                              ║
+║  🗄️  我要自己算复权                                            ║
+║     ① api.refresh_gbbq(["sh600000"])                         ║
+║     ② api.get_gbbq("600000")        # 除权除息记录            ║
+║     ③ api.get_kline_all_tdx("600000")  # 原始不复权K线        ║
+║     ④ 客户端用 xrxd 记录写复权算法                             ║
+║                                                              ║
+║  📋 我要全市场代码                                             ║
+║     股票 → api.get_stock_codes()       # ~5300+ 只            ║
+║     ETF  → api.get_etf_codes()                               ║
+║     含名 → api.get_all_codes("all")                          ║
+║                                                              ║
+║  🕐 我要交易日历                                               ║
+║     api.get_workday("2026-06-03")                            ║
+║     api.get_workday_range("2025-01-01", "2025-12-31")        ║
+║                                                              ║
+║  🔄 我要写自己的数据库                                          ║
+║     日K → api.get_kline_all_tdx("000001")    # 不复权         ║
+║     日K → api.get_kline_all_ths("000001")    # 前复权         ║
+║     分钟→ api.get_kline_all_tdx("000001","minute5")          ║
+║     日切→ api.get_market_snapshot()          # 全市场断面     ║
+║     ⚠️ 不要用 api.create_pull_kline_task()                    ║
+║        （那是 tdx-api 自己的内部 SQLite 缓存）                  ║
+║                                                              ║
+║  🏥 我要监控服务                                               ║
+║     api.health_check()   # docker healthcheck                ║
+║     api.ready_check()    # k8s readiness probe               ║
+║                                                              ║
+║  ⚠️  耗时端点（客户端要设大超时）                                 ║
+║     api.refresh_gbbq()        # 全量 9-15min, timeout=600    ║
+║     api.get_market_snapshot() # 4-15min, timeout=900         ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+""", "36"))
 
-    market = api.get_market_count()
-    if market:
-        print("市场证券数量:")
-        for item in market['exchanges']:
-            print(f"  {item['exchange']}: {item['count']}")
-        print(f"  总计: {market['total']}")
 
-    stocks = api.get_stock_codes(limit=5, prefix=False)
-    etfs = api.get_etf_codes(limit=5, prefix=False)
-    if stocks:
-        print(f"\n股票代码示例: {', '.join(stocks['list'])}")
-    if etfs:
-        print(f"ETF代码示例: {', '.join(etfs['list'])}")
-
-    kline_all = api.get_kline_all("000001", "day", limit=3)
-    if kline_all:
-        print("\n日K历史末尾样本:")
-        for item in kline_all['list']:
-            print(f"  {item['Time']} 收:{item['Close']/1000:.2f}")
-
-    index_all = api.get_index_all("sh000001", "day", limit=3)
-    if index_all:
-        print("\n上证指数末尾样本:")
-        for item in index_all['list']:
-            print(f"  {item['Time']} 收:{item['Close']/1000:.2f}")
-
-    trades_full = api.get_trade_history_full("000001", before="20241108", limit=3)
-    if trades_full:
-        print(f"\n历史成交截取({trades_full['count']}条):")
-        for item in trades_full['list']:
-            print(f"  {item['Time']} 价:{item['Price']/1000:.2f} 量:{item['Volume']}")
-
-    workdays = api.get_workday_range("2024-11-01", "2024-11-08")
-    if workdays:
-        print(f"\n交易日范围: {[d['numeric'] for d in workdays['list']]}")
-
-    income = api.get_income("000001", "2024-11-01", days=[5, 10, 20])
-    if income:
-        print("\n收益区间分析:")
-        for item in income['list']:
-            print(f"  {item['offset']} 天 -> 涨幅 {item['rise_rate']*100:.2f}% "
-                  f"(收盘 {item['current']['close']/1000:.2f} 元)")
-
-
-def main():
-    """主函数"""
-    print("""
-╔════════════════════════════════════════╗
-║   TDX股票数据API使用示例               ║
-║   演示所有API接口的使用方法             ║
-╚════════════════════════════════════════╝
-    """)
-    
-    try:
-        # 运行所有示例
-        example1_get_quote()
-        example2_get_kline()
-        example3_search_stock()
-        example4_batch_quote()
-        example5_market_analysis()
-        example6_technical_analysis()
-        example7_realtime_monitor()
-        example8_data_tasks()
-        example9_data_services()
-        example10_advanced_endpoints()
-        
-        print("\n" + "="*50)
-        print("所有示例运行完成！")
-        print("="*50)
-        
-    except requests.exceptions.ConnectionError:
-        print("\n❌ 无法连接到API服务器")
-        print(f"   请确保服务运行在 {BASE_URL}")
-        print("   启动命令: docker-compose up -d")
-    except Exception as e:
-        print(f"\n❌ 发生错误: {e}")
-
+# ═══════════════════════════════════════════════════════════════
+# 入口
+# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    main()
+    mode = "full"
+    if "--slow" in sys.argv:
+        mode = "slow"
+    elif "--quick" in sys.argv:
+        mode = "quick"
+    elif "--cheatsheet" in sys.argv:
+        print_cheatsheet()
+        sys.exit(0)
+    elif "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        print("额外参数:")
+        print("  --quick      只跑核心 10 个端点")
+        print("  --slow       包含 market-snapshot / gbbq-full 等耗时端点")
+        print("  --cheatsheet 打印常用场景速查表")
+        sys.exit(0)
 
+    print_cheatsheet()
+    success = run_examples(mode)
+    sys.exit(0 if success else 1)

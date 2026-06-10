@@ -241,6 +241,111 @@ func handleGetKlineHistoryTHS(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, resp)
 }
 
+// handleGetKlineHistoryQFQ 获取历史K线 (仿射前复权)
+// 使用 TDX 原始 K 线 + gbbq 事件计算前复权
+// 与 /api/kline-history (THS) 结果一致，但不依赖外部 HTTP
+// 注意：gbbq 缓存必须已填充，否则返回错误
+func handleGetKlineHistoryQFQ(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	klineType := r.URL.Query().Get("type")
+
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	start, end, err := parseKlineDateRange(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	// 检查 gbbq 缓存
+	if gbbq == nil {
+		errorResponse(w, "gbbq 缓存未初始化")
+		return
+	}
+
+	fullCode := protocol.AddPrefix(code)
+	xrxdList := gbbq.All()[fullCode]
+	if len(xrxdList) == 0 {
+		// gbbq 缓存为空，建议调用 POST /api/gbbq/refresh
+		errorResponse(w, "gbbq 缓存为空，请先调用 POST /api/gbbq/refresh 刷新")
+		return
+	}
+
+	// 获取原始日 K 线
+	var resp *protocol.KlineResp
+	var qerr error
+
+	switch klineType {
+	case "week":
+		resp, qerr = client.GetKlineDayAll(code)
+		if qerr == nil && resp != nil {
+			resp = convertToWeekKline(resp)
+		}
+	case "month":
+		resp, qerr = client.GetKlineDayAll(code)
+		if qerr == nil && resp != nil {
+			resp = convertToMonthKline(resp)
+		}
+	case "day":
+		fallthrough
+	default:
+		resp, qerr = client.GetKlineDayAll(code)
+	}
+
+	if resp == nil || len(resp.List) == 0 {
+		msg := "获取K线失败"
+		if qerr != nil {
+			msg = fmt.Sprintf("获取K线失败: %v", qerr)
+		}
+		errorResponse(w, msg)
+		return
+	}
+
+	// 计算复权因子
+	factors := gbbq.GetFactors(fullCode, resp.List)
+	if len(factors) == 0 {
+		// 无除权除息事件，直接返回原始数据
+		// 日期过滤
+		filtered := make([]*protocol.Kline, 0, len(resp.List))
+		for _, k := range resp.List {
+			if k == nil {
+				continue
+			}
+			if !inDateRange(k.Time, start, end) {
+				continue
+			}
+			filtered = append(filtered, k)
+		}
+		resp.List = filtered
+		resp.Count = uint16(len(filtered))
+		successResponse(w, resp)
+		return
+	}
+
+	// 应用复权因子 (resp.List 是 []*protocol.Kline, 需显式转为 protocol.Klines 才能调用 ApplyQFQ)
+	adjusted := protocol.Klines(resp.List).ApplyQFQ(factors)
+
+	// 日期过滤
+	filtered := make([]*protocol.Kline, 0, len(adjusted))
+	for _, k := range adjusted {
+		if k == nil {
+			continue
+		}
+		if !inDateRange(k.Time, start, end) {
+			continue
+		}
+		filtered = append(filtered, k)
+	}
+
+	successResponse(w, &protocol.KlineResp{
+		Count: uint16(len(filtered)),
+		List:  filtered,
+	})
+}
+
 // 获取指数数据
 func handleGetIndex(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
@@ -1508,8 +1613,7 @@ func handleRefreshGbbq(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetGbbq 获取个股股本变迁/除权除息记录
-// TDX 推送时间 15:00 表示当日已生效,这里 +1 天作为 effective_date (除权除息日次日)
-// 用户按"哪天发生了除权除息"来理解,与 TDX 推送日 +1 一致
+// TDX 推送时间 15:00 = ex-day 当日,即为对外有效日期,不再 +24h
 func handleGetGbbq(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -1532,8 +1636,10 @@ func handleGetGbbq(w http.ResponseWriter, r *http.Request) {
 			if g == nil {
 				continue
 			}
-			// +1 天作为对外的有效日期 (TDX 推 15:00 表示当日生效,次日股价才反映)
-			effectiveDate := g.Time.Add(24 * time.Hour)
+			// TDX 推 15:00 = ex-day 当日 15:00, 即为对外有效日期。
+			// 不要再 +24h,否则下游会出现"原始行 + 次日行"双行入库,
+			// 触发重复事件导致 ex-day 错误地多叠加一次除权修正。
+			effectiveDate := g.Time
 			if !inDateRange(effectiveDate, start, end) {
 				continue
 			}

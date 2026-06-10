@@ -315,6 +315,46 @@ func (this Klines) Merge(n int) Klines {
 	return ks
 }
 
+// ApplyQFQ 将前复权因子应用到 K 线数据
+// 返回新的 Klines，不修改原始数据
+// factors 必须与 this 按时间升序对齐
+func (this Klines) ApplyQFQ(factors []*Factor) Klines {
+	if len(this) == 0 || len(factors) == 0 {
+		return this
+	}
+
+	// 构建 factor 查找表（按日期）
+	factorMap := make(map[time.Time]float64, len(factors))
+	for _, f := range factors {
+		factorMap[f.Time] = f.QFQ
+	}
+
+	result := make(Klines, len(this))
+	for i, k := range this {
+		if k == nil {
+			result[i] = nil
+			continue
+		}
+
+		qfq, ok := factorMap[k.Time]
+		if !ok || qfq == 0 {
+			qfq = 1.0
+		}
+
+		// 复制 K 线并应用因子
+		newK := *k
+		newK.Open = Price(float64(k.Open) * qfq)
+		newK.High = Price(float64(k.High) * qfq)
+		newK.Low = Price(float64(k.Low) * qfq)
+		newK.Close = Price(float64(k.Close) * qfq)
+		// Volume 不调整，Amount 按价格因子调整
+		newK.Amount = Price(float64(k.Amount) * qfq)
+		result[i] = &newK
+	}
+
+	return result
+}
+
 //// Kline 计算多个K线,成一个K线
 //func (this Klines) Kline() *Kline {
 //	if this == nil {

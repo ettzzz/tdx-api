@@ -751,6 +751,7 @@ func main() {
 	http.HandleFunc("/api/kline-history", handleGetKlineHistoryTHS)
 	http.HandleFunc("/api/kline-history-tdx", handleGetKlineHistoryTDX)
 	http.HandleFunc("/api/kline-history-ths", handleGetKlineHistoryTHS)
+	http.HandleFunc("/api/kline-history-qfq", handleGetKlineHistoryQFQ)
 	http.HandleFunc("/api/turnover", handleGetTurnover)
 	http.HandleFunc("/api/gbbq", handleGetGbbq)
 	http.HandleFunc("/api/gbbq/refresh", handleRefreshGbbq)
