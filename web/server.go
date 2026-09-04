@@ -76,6 +76,9 @@ func init() {
 		log.Fatalf("初始化 gbbq 失败: %v", err)
 	}
 	log.Println("gbbq 缓存已初始化 (数据按需拉取, 调 POST /api/gbbq/refresh 触发)")
+
+	// 启动实时行情 broker (fan-out, 仅占 1 个 Pool slot)
+	initRealtime()
 }
 
 // Response 统一响应结构
@@ -780,6 +783,12 @@ func main() {
 	http.HandleFunc("/api/tasks/pull-trade", handleCreatePullTradeTask)
 	http.HandleFunc("/api/tasks", handleListTasks)
 	http.HandleFunc("/api/tasks/", handleTaskOperations)
+
+	// 实时行情 (NDJSON 流式 + 盘中量比)
+	http.HandleFunc("/api/realtime/quote", handleRealtimeQuote)
+	http.HandleFunc("/api/realtime/health", handleRealtimeHealth)
+	http.HandleFunc("/api/realtime/preheat", handleRealtimePreheat)
+	http.HandleFunc("/api/realtime/codes", handleRealtimeCodes)
 
 	port := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
