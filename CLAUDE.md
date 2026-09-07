@@ -159,6 +159,12 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/health` - 进程级健康检查(PLAN_v2 §2.3.3 增强版):返回 `status` / `time`(unix 秒) / `uptime_seconds` / `gbbq_cache_size` / `goroutines` / `memory_mb`;已切到标准信封,给 docker healthcheck / k8s liveness 用
   - `GET /api/ready` - 就绪检查(PLAN_v2 §2.3.4 新增):返回 `{ready:true, uptime_seconds}`;gbbq 缓存是否为空不再阻塞 ready,给 k8s readiness probe / 反向代理 upstream 用
   - 所有上述端点共享 `parseKlineDateRange` / `inDateRange` 辅助函数(`web/server_api_extended.go`)
+  - 实时行情 NDJSON (commit eccd882 之后, 见 `docs/realtime-usage.md` 完整使用指南):
+    - `GET /api/realtime/quote?codes=600000.SH,000001.SZ` - **NDJSON 流式推送**, 1 秒 1 轮批量 `client.GetQuote`; fan-out 架构只占 1 个 Pool slot; 含价/量/5档/盘中量比
+    - `GET /api/realtime/health` - broker 状态 (poll 次数/最近错误/订阅者数)
+    - `POST /api/realtime/preheat` - 主动预热量比窗口, body `{"codes":[...], "ratio_basis":5}`
+    - `GET /api/realtime/codes` - 已预热量比窗口列表
+    - 实现细节在 `web/server_realtime.go`,零协议/连接层改动;代码格式归一化接受 `600000.SH` / `SH600000` / `600000` 三种入参
 
 - **Tasks** (`web/tasks.go`): in-memory only, not persisted. Each task has a `context.CancelFunc`; cancellation sets status to `cancelled` and ends the task. Test scripts cancel tasks on exit.
 
