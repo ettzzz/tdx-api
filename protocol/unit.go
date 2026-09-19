@@ -484,7 +484,16 @@ func isBJIndex(code string) bool {
 // AddPrefix 添加股票/基金/指数/可转债代码前缀,针对股票/基金/指数/可转债生效,例如000001,会增加前缀sz000001(平安银行),而不是sh000001(上证指数)
 // 板块指数(880xxx/881xxx)增加前缀 sh,例如 880741 -> sh880741(归属上海交易所)。
 // 可转债: 沪市(110/111/113/118)增加前缀 sh, 深市(123/125/126/127/128)增加前缀 sz。
+// 本地补丁: 兼容 "600000.SH" 点后缀写法(对齐旧版行为,上游 2b3dcae 已不处理)。
+// 后缀显式指定交易所且优先于数字推断: 000001.SH -> sh000001(上证指数),
+// 而非按数字推断为 sz000001(平安银行); 无法识别的后缀回退到数字推断。
 func AddPrefix(code string) string {
+	if i := strings.IndexByte(code, '.'); i > 0 {
+		if ex, err := ParseExchange(code[i+1:]); err == nil {
+			return ex.String() + code[:i]
+		}
+		code = code[:i]
+	}
 	if len(code) == 6 {
 		switch {
 		case isSHStock(code):
