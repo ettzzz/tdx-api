@@ -139,9 +139,9 @@ func NewGbbq(op ...GbbqOption) (*Gbbq, error) {
 		s.mu.Lock()
 		s.m = old
 		s.mu.Unlock()
-		logs.Infof("gbbq 缓存已加载 %d 只股票历史记录", len(old))
+		logs.Infof("gbbq 缓存已加载 %d 只股票历史记录\n", len(old))
 	} else {
-		logs.Infof("gbbq 缓存为空, 数据按需拉取(POST /api/gbbq/refresh)")
+		logs.Infof("gbbq 缓存为空, 数据按需拉取(POST /api/gbbq/refresh)\n")
 	}
 
 	return s, nil
@@ -371,22 +371,22 @@ func (this *Gbbq) Refresh(codes []string) (success []string, failed map[string]e
 	}
 
 	total := len(codes)
-	logs.Infof("[gbbq.Refresh] 开始拉取 %d 只股票的 gbbq 数据", total)
+	logs.Infof("[gbbq.Refresh] 开始拉取 %d 只股票的 gbbq 数据\n", total)
 
 	success = make([]string, 0, total)
 	for i, code := range codes {
 		fullCode := protocol.AddPrefix(code)
 		if _, qerr := this.FetchOne(fullCode); qerr != nil {
-			logs.Warnf("[gbbq.Refresh] 拉取 %s 失败: %v (已拉取 %d/%d)", fullCode, qerr, i, total)
+			logs.Warnf("[gbbq.Refresh] 拉取 %s 失败: %v (已拉取 %d/%d)\n", fullCode, qerr, i, total)
 			failed[fullCode] = qerr
 			continue
 		}
 		success = append(success, fullCode)
 		if (i+1)%100 == 0 || i+1 == total {
-			logs.Infof("[gbbq.Refresh] 进度 %d/%d (成功=%d, 失败=%d)", i+1, total, len(success), len(failed))
+			logs.Infof("[gbbq.Refresh] 进度 %d/%d (成功=%d, 失败=%d)\n", i+1, total, len(success), len(failed))
 		}
 	}
-	logs.Infof("[gbbq.Refresh] 完成, 共 %d 只 (成功=%d, 失败=%d)", total, len(success), len(failed))
+	logs.Infof("[gbbq.Refresh] 完成, 共 %d 只 (成功=%d, 失败=%d)\n", total, len(success), len(failed))
 	return success, failed, nil
 }
 

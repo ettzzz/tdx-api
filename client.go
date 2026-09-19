@@ -1234,7 +1234,7 @@ func (this *Client) GetDaySnapshot(codes []string) (map[string]*protocol.Kline, 
 			if firstErr == nil {
 				firstErr = fmt.Errorf("code %s: %w", code, err)
 			}
-			logs.Warnf("拉取 %s 快照失败: %v (%d/%d)", code, err, i, len(codes))
+			logs.Warnf("拉取 %s 快照失败: %v (%d/%d)\n", code, err, i, len(codes))
 			failed = append(failed, code)
 			continue
 		}

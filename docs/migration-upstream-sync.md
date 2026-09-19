@@ -15,24 +15,25 @@
 | CST 固定时区 | protocol/model_trade.go, model_history_trade.go | 上游仍依赖服务器本地时区，我们是对的 |
 | gbbq 懒加载 + Refresh/FetchOne/WithGbbqCodes | gbbq.go | 防限流 + /api/gbbq/refresh 依赖；叠加在上游仿射模型之上 |
 | pull-trade 年份范围 | extend/pull-trade.go | StartYear/EndYear |
-| 防限流的 codes 缓存语义 | codes.go | 核对上游 CodesBase 是否已满足 |
+| AddPrefix 点后缀兼容 | protocol/unit.go | 上游 2b3dcae 不再处理 600000.SH 写法, 补丁恢复(后缀显式指定交易所, 优先于数字推断) |
+| logs 换行 | gbbq.go, client.go | injoyai/logs Infof/Warnf 不自带换行, docker json-file 驱动下不可见, 补 \\n |
 | 保留的本地独有文件 | extend/snapshot.go 等 | 见下 |
 
 ## 批次与进度
 
-- [ ] **批1** protocol 全量共享文件 + 新增 8 模型、ExHq 三件套、lib/、hosts.go、dial.go、pool.go、
+- [x] **批1** protocol 全量共享文件 + 新增 8 模型、ExHq 三件套、lib/、hosts.go、dial.go、pool.go、
       extend/{local,model_kline,model-factor,spider-sina,pull,httpserver,codes-server,util,income,codes-bj}
-- [ ] **批1** model_trade.go / model_history_trade.go 重放 CST 补丁
-- [ ] **批2** client.go(+GetDaySnapshot)、codes.go、manage.go、workday.go、updated.go、
+- [x] **批1** model_trade.go / model_history_trade.go 重放 CST 补丁
+- [x] **批2** client.go(+GetDaySnapshot)、codes.go、manage.go、workday.go、updated.go、
       extend/pull-kline.go、extend/pull-trade.go(+年份补丁)、extend/spider-ths.go、go.mod/go.sum
-- [ ] **批2** gbbq.go 合并（上游仿射骨架 + 本地懒加载/Refresh）
-- [ ] **批3** 删 client_bj_code.go（北交所走 tdxbjmore.cfg）、extend/ths-factor.go、extend/pull-kline-mysql.go
-- [ ] **M2** web 适配：q.K→q.Kline(server_realtime:277)、NewManage Option 化(server.go:50)、
+- [x] **批2** gbbq.go 合并（上游仿射骨架 + 本地懒加载/Refresh）
+- [x] **批3** 删 client_bj_code.go（北交所走 tdxbjmore.cfg）、extend/ths-factor.go、extend/pull-kline-mysql.go
+- [x] **M2** web 适配：q.K→q.Kline(server_realtime:277)、NewManage Option 化(server.go:50)、
       NewCodesSqlite(server.go:41)、GetFactors 仿射应用(server_api_extended:308)、
       DoIncomes 入参(:1120)、NewPullKline 新签名(server.go:562)、PullDaySnapshotForCodes(:1746)、
       GetTHSDayKline 类型(server.go:190)
-- [ ] **M3** 缓存兼容：全新卷 + 拷贝 tdx-api_tdx-data 卷验证
-- [ ] **M4** Docker 隔离测试：v2.0.0-rc1 镜像 + compose project `tdx-api-migrate`（8081、独立卷、
+- [x] **M3** 缓存兼容：全新卷 + 拷贝 tdx-api_tdx-data 卷验证
+- [x] **M4** Docker 隔离测试：v2.0.0-rc1 镜像 + compose project `tdx-api-migrate`（8081、独立卷、
       container_name 必须覆盖为 tdx-stock-web-rc）+ 冒烟 + 双容器对比 + 5 项正确性专项
       （低量分钟K线 / qfq vs ths 交叉 / 可转债分钟量 / ETF quote / 北交所 codes）
 - [ ] **M5** 合并 main 打 tag v2.0.0 —— 需用户确认后才执行，动 8080 前汇报
