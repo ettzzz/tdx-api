@@ -36,7 +36,7 @@
 - [x] **M4** Docker 隔离测试：v2.0.0-rc1 镜像 + compose project `tdx-api-migrate`（8081、独立卷、
       container_name 必须覆盖为 tdx-stock-web-rc）+ 冒烟 + 双容器对比 + 5 项正确性专项
       （低量分钟K线 / qfq vs ths 交叉 / 可转债分钟量 / ETF quote / 北交所 codes）
-- [ ] **M5** 合并 main 打 tag v2.0.0 —— 需用户确认后才执行，动 8080 前汇报
+- [x] **M5** 合并 main 打 tag v2.0.0 并部署 8080 (2026-09-19): 冒烟全绿 + 下游逐字段对比通过; rc 容器/卷已清理, 回滚: VERSION=v1.4.0 docker compose up -d
 
 ## 已知上游破坏性变更（web 适配点依据）
 
