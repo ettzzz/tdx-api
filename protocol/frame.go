@@ -37,6 +37,7 @@ type Frame struct {
 	Control Control //控制码,这个还不知道怎么定义
 	Type    uint16  //请求类型,如建立连接，请求分时数据等
 	Data    []byte  //数据
+	Prefix  byte    //帧头前缀,0(默认)=标准行情0x0C,扩展行情(TdxExHq)需置0x01
 }
 
 /*
@@ -56,6 +57,9 @@ func (this *Frame) Bytes() types.Bytes {
 	length := uint16(len(this.Data) + 2)
 	data := make([]byte, 12+len(this.Data))
 	data[0] = Prefix
+	if this.Prefix != 0 {
+		data[0] = this.Prefix
+	}
 	copy(data[1:], Bytes(this.MsgID))
 	data[5] = this.Control.Uint8()
 	copy(data[6:], Bytes(length))

@@ -3,7 +3,6 @@ package protocol
 import (
 	"encoding/hex"
 	"testing"
-	"time"
 )
 
 func Test_stockKline_Frame(t *testing.T) {
@@ -34,67 +33,23 @@ func Test_stockKline_Decode(t *testing.T) {
 	}
 }
 
-func TestKlines_ApplyQFQ(t *testing.T) {
-	// 构造测试数据
-	baseTime := time.Date(2025, 5, 20, 15, 0, 0, 0, time.Local)
-
-	klines := Klines{
-		{Time: baseTime, Open: 1000, High: 1100, Low: 900, Close: 1050, Volume: 1000, Amount: 1050000},
-		{Time: baseTime.AddDate(0, 0, 1), Open: 1050, High: 1150, Low: 950, Close: 1100, Volume: 1200, Amount: 1320000},
+func TestNormalizeKlineVolume(t *testing.T) {
+	tests := []struct {
+		name   string
+		volume int64
+		cache  KlineCache
+		want   int64
+	}{
+		{name: "stock minute", volume: 43600, cache: KlineCache{Type: TypeKlineMinute, Code: "sh600000"}, want: 436},
+		{name: "sh convertible bond minute", volume: 436, cache: KlineCache{Type: TypeKlineMinute, Code: "sh110075"}, want: 436},
+		{name: "sz convertible bond minute", volume: 534, cache: KlineCache{Type: TypeKlineMinute, Code: "sz123064"}, want: 534},
+		{name: "stock day", volume: 43600, cache: KlineCache{Type: TypeKlineDay, Code: "sh600000"}, want: 43600},
 	}
-
-	factors := []*Factor{
-		{Time: baseTime, QFQ: 0.8},                       // 除权日，因子 0.8
-		{Time: baseTime.AddDate(0, 0, 1), QFQ: 1.0}, // 次日无调整
-	}
-
-	result := klines.ApplyQFQ(factors)
-
-	if len(result) != 2 {
-		t.Fatalf("expected 2 klines, got %d", len(result))
-	}
-
-	// 第一天：应用 0.8 因子
-	k0 := result[0]
-	if k0.Open != 800 { // 1000 * 0.8
-		t.Errorf("day1 open: expected 800, got %d", k0.Open)
-	}
-	if k0.Close != 840 { // 1050 * 0.8
-		t.Errorf("day1 close: expected 840, got %d", k0.Close)
-	}
-
-	// 第二天：因子 1.0，不变
-	k1 := result[1]
-	if k1.Open != 1050 {
-		t.Errorf("day2 open: expected 1050, got %d", k1.Open)
-	}
-}
-
-func TestKlines_ApplyQFQ_EmptyFactors(t *testing.T) {
-	klines := Klines{
-		{Time: time.Now(), Open: 1000, Close: 1050},
-	}
-
-	// 空因子，返回原始数据
-	result := klines.ApplyQFQ([]*Factor{})
-	if len(result) != 1 {
-		t.Fatalf("expected 1 kline, got %d", len(result))
-	}
-	if result[0].Open != 1000 {
-		t.Errorf("expected unchanged open 1000, got %d", result[0].Open)
-	}
-}
-
-func TestKlines_ApplyQFQ_NilKlines(t *testing.T) {
-	now := time.Now()
-	klines := Klines{nil, {Time: now, Open: 1000, Close: 1050}}
-	factors := []*Factor{{Time: now, QFQ: 0.9}}
-
-	result := klines.ApplyQFQ(factors)
-	if result[0] != nil {
-		t.Error("expected nil kline to remain nil")
-	}
-	if result[1].Open != 900 { // 1000 * 0.9
-		t.Errorf("expected 900, got %d", result[1].Open)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeKlineVolume(test.volume, test.cache); got != test.want {
+				t.Fatalf("normalizeKlineVolume() = %d, want %d", got, test.want)
+			}
+		})
 	}
 }

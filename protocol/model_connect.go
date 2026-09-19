@@ -12,9 +12,11 @@ var (
 	MCode          = code{}
 	MMinute        = minute{}
 	MHistoryMinute = historyMinute{}
+	MCallAuction   = callAuction{}
 	MTrade         = trade{}
 	MHistoryTrade  = historyTrade{}
 	MKline         = kline{}
+	MGbbq          = gbbq{}
 )
 
 type ConnectResp struct {

@@ -3,10 +3,11 @@ package protocol
 import (
 	"errors"
 	"fmt"
-	"github.com/injoyai/base/types"
-	"github.com/injoyai/conv"
 	"sort"
 	"time"
+
+	"github.com/injoyai/base/types"
+	"github.com/injoyai/conv"
 )
 
 type KlineReq struct {
@@ -39,12 +40,13 @@ type KlineResp struct {
 }
 
 type Kline struct {
-	Last      Price     //昨日收盘价,这个是列表的上一条数据的收盘价，如果没有上条数据，那么这个值为0
+	Last      Price     //昨日收盘价
 	Open      Price     //开盘价
 	High      Price     //最高价
 	Low       Price     //最低价
 	Close     Price     //收盘价,如果是当天,则是最新价/实时价
-	Volume    int64     //成交量
+	Order     int       //成交单数,不一定有值
+	Volume    int64     //成交量,手
 	Amount    Price     //成交额
 	Time      time.Time //时间
 	UpCount   int       //上涨数量,指数有效
@@ -59,6 +61,11 @@ func (this *Kline) String() string {
 		Int64UnitString(this.Volume), FloatUnitString(this.Amount.Float64()),
 		this.UpCount, this.DownCount,
 	)
+}
+
+// Amplitude 振幅
+func (this *Kline) Amplitude() Price {
+	return this.High - this.Low
 }
 
 // MaxDifference 最大差值，最高-最低
@@ -180,10 +187,7 @@ func (kline) Decode(bs []byte, c KlineCache) (*KlineResp, error) {
 		*/
 		k.Volume = int64(getVolume(Uint32(bs[:4])))
 		bs = bs[4:]
-		switch c.Type {
-		case TypeKlineMinute, TypeKline5Minute, TypeKlineMinute2, TypeKline15Minute, TypeKline30Minute, TypeKline60Minute, TypeKlineDay2:
-			k.Volume /= 100
-		}
+		k.Volume = normalizeKlineVolume(k.Volume, c)
 		k.Amount = Price(getVolume(Uint32(bs[:4])) * 1000) //从元转为厘,并去除多余的小数
 		bs = bs[4:]
 
@@ -205,6 +209,17 @@ func (kline) Decode(bs []byte, c KlineCache) (*KlineResp, error) {
 type KlineCache struct {
 	Type uint8  //1分钟,5分钟,日线等
 	Kind string //指数,个股等
+	Code string //证券代码,用于区分不同品种的成交量单位
+}
+
+func normalizeKlineVolume(volume int64, c KlineCache) int64 {
+	switch c.Type {
+	case TypeKlineMinute, TypeKline5Minute, TypeKlineMinute2, TypeKline15Minute, TypeKline30Minute, TypeKline60Minute, TypeKlineDay2:
+		if !IsConvertibleBond(c.Code) {
+			return volume / 100
+		}
+	}
+	return volume
 }
 
 // FixKlineTime 修复盘内下午(13~15点)拉取数据的时候,11.30的时间变成13.00
@@ -233,31 +248,167 @@ func FixKlineTime(ks []*Kline) []*Kline {
 
 type Klines []*Kline
 
-// LastPrice 获取最后一个K线的收盘价
-func (this Klines) LastPrice() Price {
-	if len(this) == 0 {
+// MA 均线
+func (ks Klines) MA(n int) Price {
+	if len(ks) < n {
 		return 0
 	}
-	return this[len(this)-1].Close
+	sum := Price(0)
+	// 取最后n个
+	for _, k := range ks[len(ks)-n:] {
+		sum += k.Close
+	}
+	return sum / Price(n)
 }
 
-func (this Klines) Len() int {
-	return len(this)
+// EMA MACD的基础
+func (ks Klines) EMA(n int) Price {
+	if len(ks) == 0 || n <= 0 {
+		return 0
+	}
+
+	ema := ks[0].Close
+	den := int64(n + 1)
+	num := int64(2)
+
+	for i := 1; i < len(ks); i++ {
+		ema = Price((int64(ks[i].Close)*num + int64(ema)*(den-num)) / den)
+	}
+	return ema
 }
 
-func (this Klines) Swap(i, j int) {
-	this[i], this[j] = this[j], this[i]
+// MACD 常用于短线核心
+func (ks Klines) MACD() (dif, dea, hist Price) {
+	if len(ks) == 0 {
+		return 0, 0, 0
+	}
+
+	ema12 := ks[0].Close
+	ema26 := ks[0].Close
+	den12 := int64(13)
+	den26 := int64(27)
+	denDea := int64(10)
+	num := int64(2)
+
+	for i := 1; i < len(ks); i++ {
+		ema12 = Price((int64(ks[i].Close)*num + int64(ema12)*(den12-num)) / den12)
+		ema26 = Price((int64(ks[i].Close)*num + int64(ema26)*(den26-num)) / den26)
+		dif = ema12 - ema26
+		dea = Price((int64(dif)*num + int64(dea)*(denDea-num)) / denDea)
+		hist = (dif - dea) * 2
+	}
+	return dif, dea, hist
 }
 
-func (this Klines) Less(i, j int) bool {
-	return this[i].Time.Before(this[j].Time)
+// RSI 常用于超买超卖
+func (ks Klines) RSI(n int) int64 {
+	if len(ks) == 0 || n <= 0 {
+		return 0
+	}
+	var gain, loss int64
+	var rsi int64
+
+	for i := 1; i < len(ks); i++ {
+		diff := int64(ks[i].Close - ks[i-1].Close)
+
+		if diff > 0 {
+			gain += diff
+		} else {
+			loss -= diff
+		}
+
+		if i >= n+1 {
+			prev := int64(ks[i-n].Close - ks[i-n-1].Close)
+			if prev > 0 {
+				gain -= prev
+			} else {
+				loss += prev
+			}
+		}
+
+		if i >= n && loss > 0 {
+			rsi = 100 * gain / (gain + loss)
+		}
+	}
+	return rsi
 }
 
-func (this Klines) Sort() {
-	sort.Sort(this)
+// BOLL 布林带（洗盘神器）
+func (ks Klines) BOLL(n int) (upper, mid, lower Price) {
+	if len(ks) < n || n <= 0 {
+		return 0, 0, 0
+	}
+
+	mid = ks.MA(n)
+	var sum int64
+	for _, k := range ks[len(ks)-n:] {
+		d := int64(k.Close - mid)
+		sum += d * d
+	}
+	std := I64Sqrt(sum / int64(n))
+	upper = mid + Price(std*2)
+	lower = mid - Price(std*2)
+	return upper, mid, lower
 }
 
-func (this Klines) Kline(t time.Time, last Price) *Kline {
+// ATR 常用于判断是否该止损
+func (ks Klines) ATR(n int) Price {
+	if len(ks) == 0 || n <= 0 {
+		return 0
+	}
+	var sum int64
+	var atr Price
+
+	for i := 1; i < len(ks); i++ {
+		h := ks[i].High
+		l := ks[i].Low
+		pc := ks[i-1].Close
+
+		tr := max(h-l, max((h-pc).Abs(), (l-pc).Abs()))
+		sum += int64(tr)
+
+		if i >= n {
+			prev := max(ks[i-n+1].High-ks[i-n+1].Low,
+				max((ks[i-n+1].High-ks[i-n].Close).Abs(), (ks[i-n+1].Low-ks[i-n].Close).Abs()))
+			sum -= int64(prev)
+			atr = Price(sum / int64(n))
+		}
+	}
+	return atr
+}
+
+func (ks Klines) VWAP() Price {
+	if len(ks) == 0 {
+		return 0
+	}
+	var volSum, amtSum int64
+	var vwap Price
+
+	for i := 0; i < len(ks); i++ {
+		volSum += ks[i].Volume
+		amtSum += int64(ks[i].Amount)
+		if volSum > 0 {
+			vwap = Price(amtSum / volSum)
+		}
+	}
+	return vwap
+}
+
+// LastPrice 获取最后一个K线的收盘价
+func (ks Klines) LastPrice() Price {
+	if len(ks) == 0 {
+		return 0
+	}
+	return ks[len(ks)-1].Close
+}
+
+func (ks Klines) Sort() {
+	sort.Slice(ks, func(i, j int) bool {
+		return ks[i].Time.Before(ks[j].Time)
+	})
+}
+
+func (ks Klines) Kline(t time.Time, last Price) *Kline {
 	k := &Kline{
 		Time:   t,
 		Open:   last,
@@ -267,7 +418,7 @@ func (this Klines) Kline(t time.Time, last Price) *Kline {
 		Volume: 0,
 		Amount: 0,
 	}
-	for i, v := range this {
+	for i, v := range ks {
 		switch i {
 		case 0:
 			k.Open = v.Open
@@ -289,113 +440,161 @@ func (this Klines) Kline(t time.Time, last Price) *Kline {
 }
 
 // Merge 合并成其他类型的K线
-func (this Klines) Merge(n int) Klines {
+func (ks Klines) Merge(n int) Klines {
 	if n <= 1 {
-		return this
+		return ks
 	}
 
-	ks := Klines(nil)
+	res := Klines(nil)
 	ls := Klines(nil)
 	for i := 0; ; i++ {
-		if len(this) <= i*n {
+		if len(ks) <= i*n {
 			break
 		}
-		if len(this) < (i+1)*n {
-			ls = this[i*n:]
+		if len(ks) < (i+1)*n {
+			ls = ks[i*n:]
 		} else {
-			ls = this[i*n : (i+1)*n]
+			ls = ks[i*n : (i+1)*n]
 		}
 		if len(ls) == 0 {
 			break
 		}
 		last := ls[len(ls)-1]
 		k := ls.Kline(last.Time, ls[0].Open)
-		ks = append(ks, k)
+		res = append(res, k)
 	}
-	return ks
+	return res
 }
 
-// ApplyQFQ 将前复权因子应用到 K 线数据
-// 返回新的 Klines，不修改原始数据
-// factors 必须与 this 按时间升序对齐
-func (this Klines) ApplyQFQ(factors []*Factor) Klines {
-	if len(this) == 0 || len(factors) == 0 {
-		return this
+// Merge241 合并成其他类型的K线
+func (ks Klines) Merge241(n int) Klines {
+	mDay := make(map[string]Klines)
+	for _, v := range ks {
+		day := v.Time.Format(time.DateOnly)
+		mDay[day] = append(mDay[day], v)
 	}
 
-	// 构建 factor 查找表（按日期）
-	factorMap := make(map[time.Time]float64, len(factors))
-	for _, f := range factors {
-		factorMap[f.Time] = f.QFQ
-	}
+	result := Klines{}
 
-	result := make(Klines, len(this))
-	for i, k := range this {
-		if k == nil {
-			result[i] = nil
+	for dateStr, dayKs := range mDay {
+		// 构建 minute → K 映射
+		m := make(map[string]*Kline, len(dayKs))
+		for _, k := range dayKs {
+			key := k.Time.Format(timeFormat)
+			m[key] = k
+		}
+
+		// 按 times 构建标准 241 根分钟
+		std := make([]*Kline, 0, len(times241))
+		var lastClose Price
+		for _, key := range times241 {
+			if k, ok := m[key]; ok {
+				std = append(std, k)
+				lastClose = k.Close
+			} else {
+				t, _ := time.ParseInLocation(time.DateOnly+timeFormat, dateStr+key, time.Local)
+				std = append(std, &Kline{
+					Time:      t,
+					Open:      lastClose,
+					High:      lastClose,
+					Low:       lastClose,
+					Close:     lastClose,
+					Volume:    0,
+					Amount:    0,
+					Order:     0,
+					UpCount:   0,
+					DownCount: 0,
+				})
+			}
+		}
+
+		lenStd := len(std)
+		if lenStd == 0 {
 			continue
 		}
 
-		qfq, ok := factorMap[k.Time]
-		if !ok || qfq == 0 {
-			qfq = 1.0
-		}
+		// 先把第一根独立 K 线直接加入结果
+		result = append(result, std[0])
 
-		// 复制 K 线并应用因子
-		newK := *k
-		newK.Open = Price(float64(k.Open) * qfq)
-		newK.High = Price(float64(k.High) * qfq)
-		newK.Low = Price(float64(k.Low) * qfq)
-		newK.Close = Price(float64(k.Close) * qfq)
-		// Volume 不调整，Amount 按价格因子调整
-		newK.Amount = Price(float64(k.Amount) * qfq)
-		result[i] = &newK
+		// 从第二根开始 N 分钟合并
+		for i := 1; i < lenStd; {
+
+			k2 := &Kline{
+				Last:      std[i].Last,
+				Open:      std[i].Open,
+				High:      std[i].High,
+				Low:       std[i].Low,
+				Close:     std[i].Close,
+				Order:     std[i].Order,
+				Volume:    std[i].Volume,
+				Amount:    std[i].Amount,
+				Time:      std[i].Time,
+				UpCount:   std[i].UpCount,
+				DownCount: std[i].DownCount,
+			}
+
+			end := i + n
+			if end > lenStd {
+				end = lenStd
+			}
+
+			for j := i + 1; j < end; j++ {
+				k := std[j]
+				if k.High > k2.High {
+					k2.High = k.High
+				}
+				if k.Low < k2.Low {
+					k2.Low = k.Low
+				}
+				k2.Time = k.Time
+				k2.Close = k.Close
+				k2.Volume += k.Volume
+				k2.Amount += k.Amount
+				k2.Order += k.Order
+			}
+
+			result = append(result, k2)
+
+			i = end
+		}
 	}
+
+	result.Sort()
 
 	return result
 }
 
-//// Kline 计算多个K线,成一个K线
-//func (this Klines) Kline() *Kline {
-//	if this == nil {
-//		return new(Kline)
-//	}
-//	k := new(Kline)
-//	for i, v := range this {
-//		switch i {
-//		case 0:
-//			k.Open = v.Open
-//			k.High = v.High
-//			k.Low = v.Low
-//			k.Close = v.Close
-//		case len(this) - 1:
-//			k.Close = v.Close
-//			k.Time = v.Time
-//		}
-//		if v.High > k.High {
-//			k.High = v.High
-//		}
-//		if v.Low < k.Low {
-//			k.Low = v.Low
-//		}
-//		k.Volume += v.Volume
-//		k.Amount += v.Amount
-//	}
-//	return k
-//}
+var (
+	times241 = []string{
+		// 上午 09:30 – 11:29
+		"09:30", "09:31", "09:32", "09:33", "09:34", "09:35", "09:36", "09:37", "09:38", "09:39",
+		"09:40", "09:41", "09:42", "09:43", "09:44", "09:45", "09:46", "09:47", "09:48", "09:49",
+		"09:50", "09:51", "09:52", "09:53", "09:54", "09:55", "09:56", "09:57", "09:58", "09:59",
+		"10:00", "10:01", "10:02", "10:03", "10:04", "10:05", "10:06", "10:07", "10:08", "10:09",
+		"10:10", "10:11", "10:12", "10:13", "10:14", "10:15", "10:16", "10:17", "10:18", "10:19",
+		"10:20", "10:21", "10:22", "10:23", "10:24", "10:25", "10:26", "10:27", "10:28", "10:29",
+		"10:30", "10:31", "10:32", "10:33", "10:34", "10:35", "10:36", "10:37", "10:38", "10:39",
+		"10:40", "10:41", "10:42", "10:43", "10:44", "10:45", "10:46", "10:47", "10:48", "10:49",
+		"10:50", "10:51", "10:52", "10:53", "10:54", "10:55", "10:56", "10:57", "10:58", "10:59",
+		"11:00", "11:01", "11:02", "11:03", "11:04", "11:05", "11:06", "11:07", "11:08", "11:09",
+		"11:10", "11:11", "11:12", "11:13", "11:14", "11:15", "11:16", "11:17", "11:18", "11:19",
+		"11:20", "11:21", "11:22", "11:23", "11:24", "11:25", "11:26", "11:27", "11:28", "11:29",
+		"11:30",
 
-//// Merge 合并K线,1分钟转成5,15,30分钟等
-//func (this Klines) Merge(n int) Klines {
-//	if this == nil {
-//		return nil
-//	}
-//	ks := []*Kline(nil)
-//	for i := 0; i < len(this); i += n {
-//		if i+n > len(this) {
-//			ks = append(ks, this[i:].Kline())
-//		} else {
-//			ks = append(ks, this[i:i+n].Kline())
-//		}
-//	}
-//	return ks
-//}
+		// 下午 13:01 – 15:00
+		"13:01", "13:02", "13:03", "13:04", "13:05", "13:06", "13:07", "13:08", "13:09", "13:10",
+		"13:11", "13:12", "13:13", "13:14", "13:15", "13:16", "13:17", "13:18", "13:19", "13:20",
+		"13:21", "13:22", "13:23", "13:24", "13:25", "13:26", "13:27", "13:28", "13:29", "13:30",
+		"13:31", "13:32", "13:33", "13:34", "13:35", "13:36", "13:37", "13:38", "13:39", "13:40",
+		"13:41", "13:42", "13:43", "13:44", "13:45", "13:46", "13:47", "13:48", "13:49", "13:50",
+		"13:51", "13:52", "13:53", "13:54", "13:55", "13:56", "13:57", "13:58", "13:59", "14:00",
+		"14:01", "14:02", "14:03", "14:04", "14:05", "14:06", "14:07", "14:08", "14:09", "14:10",
+		"14:11", "14:12", "14:13", "14:14", "14:15", "14:16", "14:17", "14:18", "14:19", "14:20",
+		"14:21", "14:22", "14:23", "14:24", "14:25", "14:26", "14:27", "14:28", "14:29", "14:30",
+		"14:31", "14:32", "14:33", "14:34", "14:35", "14:36", "14:37", "14:38", "14:39", "14:40",
+		"14:41", "14:42", "14:43", "14:44", "14:45", "14:46", "14:47", "14:48", "14:49", "14:50",
+		"14:51", "14:52", "14:53", "14:54", "14:55", "14:56", "14:57", "14:58", "14:59", "15:00",
+	}
+
+	timeFormat = "15:04"
+)
