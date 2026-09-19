@@ -3,14 +3,25 @@ package extend
 import (
 	"encoding/binary"
 	"math"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/injoyai/tdx/protocol"
 )
 
+// testTdxDir 返回本机通达信安装目录; 不存在时跳过测试(上游作者为 Windows 环境)
+func testTdxDir(t *testing.T) string {
+	t.Helper()
+	const dir = `D:\软件\通达信\`
+	if _, err := os.Stat(dir); err != nil {
+		t.Skipf("跳过: 本机无通达信安装目录 %s", dir)
+	}
+	return dir
+}
+
 func TestReadDay(t *testing.T) {
-	ks, err := ReadDay("D:\\软件\\通达信\\", "sz000001")
+	ks, err := ReadDay(testTdxDir(t), "sz000001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +36,7 @@ func TestReadDay(t *testing.T) {
 
 func TestReadMinute(t *testing.T) {
 	// 1分钟 .lc1
-	ks, err := ReadMinute1("D:\\软件\\通达信\\", "sz000001")
+	ks, err := ReadMinute1(testTdxDir(t), "sz000001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +48,7 @@ func TestReadMinute(t *testing.T) {
 			v.Amount.Float64(), v.Volume)
 	}
 	// 5分钟 .lc5
-	ks5, err := ReadMinute5("D:\\软件\\通达信\\", "sz000001")
+	ks5, err := ReadMinute5(testTdxDir(t), "sz000001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +62,7 @@ func TestReadMinute(t *testing.T) {
 }
 
 func TestReadDayBJ(t *testing.T) {
-	ks, err := ReadDay("D:\\软件\\通达信\\", "bj920000")
+	ks, err := ReadDay(testTdxDir(t), "bj920000")
 	if err != nil {
 		t.Fatal(err)
 	}

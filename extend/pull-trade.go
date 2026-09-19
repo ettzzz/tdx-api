@@ -2,12 +2,13 @@ package extend
 
 import (
 	"context"
+	"path/filepath"
+	"time"
+
 	"github.com/injoyai/conv"
 	"github.com/injoyai/logs"
 	"github.com/injoyai/tdx"
 	"github.com/injoyai/tdx/protocol"
-	"path/filepath"
-	"time"
 )
 
 func NewPullTrade(dir string) *PullTrade {
@@ -18,8 +19,8 @@ func NewPullTrade(dir string) *PullTrade {
 
 type PullTrade struct {
 	Dir       string
-	StartYear int
-	EndYear   int
+	StartYear int //起始年份, <=0 则默认 2000
+	EndYear   int //结束年份, <=0 则默认当年
 }
 
 func (this *PullTrade) Pull(ctx context.Context, m *tdx.Manage, code string) error {
@@ -31,7 +32,6 @@ func (this *PullTrade) Pull(ctx context.Context, m *tdx.Manage, code string) err
 	if endYear <= 0 {
 		endYear = time.Now().Year()
 	}
-
 	for i := startYear; i <= endYear; i++ {
 		select {
 		case <-ctx.Done():
