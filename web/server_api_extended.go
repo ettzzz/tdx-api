@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -325,8 +324,8 @@ func handleGetKlineHistoryQFQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 应用复权因子 (resp.List 是 []*protocol.Kline, 需显式转为 protocol.Klines 才能调用 ApplyQFQ)
-	adjusted := protocol.Klines(resp.List).ApplyQFQ(factors)
+	// 应用复权因子 (上游仿射模型: price_adj = A*raw + B, 对齐通达信桌面端)
+	adjusted := protocol.ApplyQFQ(resp.List, factors)
 
 	// 日期过滤
 	filtered := make([]*protocol.Kline, 0, len(adjusted))
@@ -545,7 +544,7 @@ func handleGetStockCodes(w http.ResponseWriter, r *http.Request) {
 		includePrefix = strings.ToLower(prefixParam) != "false"
 	}
 
-	codes := tdx.DefaultCodes.GetStocks()
+	codes := tdx.DefaultCodes.GetStockCodes()
 	if limit > 0 && len(codes) > limit {
 		codes = codes[:limit]
 	}
@@ -578,7 +577,7 @@ func handleGetETFCodes(w http.ResponseWriter, r *http.Request) {
 		includePrefix = strings.ToLower(prefixParam) != "false"
 	}
 
-	codes := tdx.DefaultCodes.GetETFs()
+	codes := tdx.DefaultCodes.GetETFCodes()
 	if limit > 0 && len(codes) > limit {
 		codes = codes[:limit]
 	}
@@ -1055,8 +1054,10 @@ func handleGetServerStatus(w http.ResponseWriter, r *http.Request) {
 //   - gbbq_cache_size: gbbq 内存缓存中的股票数 (0 表示尚未拉过, 正常冷启动状态)
 //   - goroutines:    当前 goroutine 数, 用来辅助观察是否有泄漏
 //   - memory_mb:     当前堆分配内存 (Alloc, MB), 粗略指标
+//
 // 注: 已切到标准响应信封 (code/message/data), 老格式 `{"status":..,"time":..}` 不再保留.
-//     历史冒烟脚本 run_api_checks.py 通过 `data.code==0` 判定, 不受影响.
+//
+//	历史冒烟脚本 run_api_checks.py 通过 `data.code==0` 判定, 不受影响.
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	gbbqSize := 0
 	if gbbq != nil {
@@ -1068,12 +1069,12 @@ func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	memMB := memStats.Alloc / 1024 / 1024
 
 	successResponse(w, map[string]interface{}{
-		"status":         "healthy",
-		"time":           time.Now().Unix(),
-		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+		"status":          "healthy",
+		"time":            time.Now().Unix(),
+		"uptime_seconds":  int64(time.Since(startedAt).Seconds()),
 		"gbbq_cache_size": gbbqSize,
-		"goroutines":     runtime.NumGoroutine(),
-		"memory_mb":      memMB,
+		"goroutines":      runtime.NumGoroutine(),
+		"memory_mb":       memMB,
 	})
 }
 
@@ -1116,8 +1117,8 @@ func handleGetIncome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	klines := buildExtendKlines(code, resp.List)
-	incomes := extend.DoIncomes(klines, startDate, dayOffsets...)
+	// DoIncomes 直接消费 protocol.Klines (上游签名)
+	incomes := extend.DoIncomes(resp.List, startDate, dayOffsets...)
 
 	list := make([]map[string]interface{}, 0, len(incomes))
 	for _, income := range incomes {
@@ -1152,10 +1153,12 @@ func handleGetIncome(w http.ResponseWriter, r *http.Request) {
 
 func getAllCodeModels() ([]*tdx.CodeModel, error) {
 	if tdx.DefaultCodes != nil {
-		if list, err := tdx.DefaultCodes.GetCodes(true); err == nil && len(list) > 0 {
+		list := make([]*tdx.CodeModel, 0, 4096)
+		for _, v := range tdx.DefaultCodes.Iter() {
+			list = append(list, v)
+		}
+		if len(list) > 0 {
 			return list, nil
-		} else if err != nil {
-			log.Printf("从数据库读取代码失败: %v", err)
 		}
 	}
 
@@ -1260,29 +1263,6 @@ func parseDaysParam(value string) []int {
 		}
 	}
 	return days
-}
-
-func buildExtendKlines(code string, list []*protocol.Kline) extend.Klines {
-	ks := make(extend.Klines, 0, len(list))
-	for _, item := range list {
-		if item == nil {
-			continue
-		}
-		ks = append(ks, &extend.Kline{
-			Code:   code,
-			Date:   item.Time.Unix(),
-			Open:   item.Open,
-			High:   item.High,
-			Low:    item.Low,
-			Close:  item.Close,
-			Volume: item.Volume,
-			Amount: item.Amount,
-		})
-	}
-	sort.Slice(ks, func(i, j int) bool {
-		return ks[i].Date < ks[j].Date
-	})
-	return ks
 }
 
 func parseBool(value string) bool {
@@ -1656,11 +1636,11 @@ func handleGetGbbq(w http.ResponseWriter, r *http.Request) {
 			if g.IsXRXD() {
 				x := g.XRXD()
 				xrxd = append(xrxd, map[string]any{
-					"date":         d,
-					"fenhong":      x.Fenhong,
-					"peigujia":     x.Peigujia,
-					"songzhuangu":  x.Songzhuangu,
-					"peigu":        x.Peigu,
+					"date":        d,
+					"fenhong":     x.Fenhong,
+					"peigujia":    x.Peigujia,
+					"songzhuangu": x.Songzhuangu,
+					"peigu":       x.Peigu,
 				})
 			}
 		}
@@ -1740,7 +1720,7 @@ func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	codes := tdx.DefaultCodes.GetStocks() // 5300+ 只
+	codes := tdx.DefaultCodes.GetStockCodes() // 5300+ 只
 
 	// 2) 4 路并发拉取 (P0-5): chunkSize=64, 走 manager.Pool
 	snapshots, failed, err := extend.PullDaySnapshotForCodes(manager, codes)

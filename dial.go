@@ -2,13 +2,14 @@ package tdx
 
 import (
 	"context"
-	"github.com/injoyai/ios"
-	"github.com/injoyai/ios/module/tcp"
-	"github.com/injoyai/logs"
 	"math/rand"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/injoyai/ios"
+	"github.com/injoyai/ios/module/tcp"
+	"github.com/injoyai/logs"
 )
 
 func NewTCPDial(addr string) ios.DialFunc {
@@ -74,6 +75,35 @@ func NewRangeDial(hosts []string) ios.DialFunc {
 			if i < len(hosts)-1 {
 				//最后一个错误返回出去
 				logs.Err(err, "等待2秒后尝试下一个服务地址...")
+				<-time.After(time.Second * 2)
+			}
+		}
+		return
+	}
+}
+
+// NewExRangeDial 遍历扩展行情(TdxExHq)服务地址进行连接,成功则结束遍历(端口 7727)
+func NewExRangeDial(hosts []string) ios.DialFunc {
+	if len(hosts) == 0 {
+		hosts = ExHosts
+	}
+	return func(ctx context.Context) (c ios.ReadWriteCloser, _ string, err error) {
+		for i, addr := range hosts {
+			select {
+			case <-ctx.Done():
+				return nil, "", ctx.Err()
+			default:
+			}
+			if !strings.Contains(addr, ":") {
+				addr += ":" + ExPort
+			}
+			c, err = net.Dial("tcp", addr)
+			if err == nil {
+				return c, addr, nil
+			}
+			if i < len(hosts)-1 {
+				//最后一个错误返回出去
+				logs.Err(err, "等待2秒后尝试下一个扩展行情服务地址...")
 				<-time.After(time.Second * 2)
 			}
 		}

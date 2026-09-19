@@ -42,7 +42,7 @@ func PullDaySnapshotForCodes(m *tdx.Manage, codes []string) (map[string]*protoco
 			var chunkResult map[string]*protocol.Kline
 			var chunkFailed []string
 			var chunkErr error
-			poolErr := m.Pool.Do(func(c *tdx.Client) error {
+			poolErr := m.IPool.Do(func(c *tdx.Client) error {
 				chunkResult, chunkFailed, chunkErr = c.GetDaySnapshot(chunk)
 				return nil
 			})

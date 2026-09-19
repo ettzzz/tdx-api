@@ -18,20 +18,20 @@ import (
 
 // QuoteTick 单条行情推送 (NDJSON 一行)
 type QuoteTick struct {
-	Ts          int64      `json:"ts"`                   // unix 秒
-	Code        string     `json:"code"`                 // 股票代码 (含交易所前缀)
-	Price       float64    `json:"price"`                // 最新价 (元)
-	Open        float64    `json:"open"`                 // 今日开盘 (元)
-	High        float64    `json:"high"`                 // 今日最高 (元)
-	Low         float64    `json:"low"`                  // 今日最低 (元)
-	PreClose    float64    `json:"pre_close"`            // 昨日收盘 (元)
-	Volume      int64      `json:"volume"`               // 累计成交量 (手)
-	Amount      float64    `json:"amount"`               // 累计成交额 (元)
-	Bid         [][]any    `json:"bid,omitempty"`        // 5 档买盘 [[价, 量], ...]
-	Ask         [][]any    `json:"ask,omitempty"`        // 5 档卖盘
-	VolumeRatio *float64   `json:"volume_ratio"`         // 量比 (无数据时为 null)
-	RatioBasis  int        `json:"ratio_basis"`          // 实际使用的历史天数 (0=无)
-	Error       string     `json:"error,omitempty"`      // 单只拉取失败时填
+	Ts          int64    `json:"ts"`              // unix 秒
+	Code        string   `json:"code"`            // 股票代码 (含交易所前缀)
+	Price       float64  `json:"price"`           // 最新价 (元)
+	Open        float64  `json:"open"`            // 今日开盘 (元)
+	High        float64  `json:"high"`            // 今日最高 (元)
+	Low         float64  `json:"low"`             // 今日最低 (元)
+	PreClose    float64  `json:"pre_close"`       // 昨日收盘 (元)
+	Volume      int64    `json:"volume"`          // 累计成交量 (手)
+	Amount      float64  `json:"amount"`          // 累计成交额 (元)
+	Bid         [][]any  `json:"bid,omitempty"`   // 5 档买盘 [[价, 量], ...]
+	Ask         [][]any  `json:"ask,omitempty"`   // 5 档卖盘
+	VolumeRatio *float64 `json:"volume_ratio"`    // 量比 (无数据时为 null)
+	RatioBasis  int      `json:"ratio_basis"`     // 实际使用的历史天数 (0=无)
+	Error       string   `json:"error,omitempty"` // 单只拉取失败时填
 }
 
 // VolumeWindow 量比历史窗口 (内存, 不落盘)
@@ -223,7 +223,7 @@ func (b *Broker) pollOnce() {
 	copy(getQuoteCodes, codes)
 
 	var quotes protocol.QuotesResp
-	err := manager.Pool.Do(func(c *tdx.Client) error {
+	err := manager.Do(func(c *tdx.Client) error {
 		var e error
 		quotes, e = c.GetQuote(getQuoteCodes...)
 		return e
@@ -274,18 +274,18 @@ func (b *Broker) pollOnce() {
 		tick := QuoteTick{
 			Ts:       ts,
 			Code:     withExchangeSuffix(code),
-			Price:    q.K.Close.Float64(),
-			Open:     q.K.Open.Float64(),
-			High:     q.K.High.Float64(),
-			Low:      q.K.Low.Float64(),
-			PreClose: q.K.Last.Float64(),
-			Volume:   int64(q.TotalHand),
-			Amount:   q.Amount,
+			Price:    q.Kline.Close.Float64(),
+			Open:     q.Kline.Open.Float64(),
+			High:     q.Kline.High.Float64(),
+			Low:      q.Kline.Low.Float64(),
+			PreClose: q.Kline.Last.Float64(),
+			Volume:   q.Kline.Volume,
+			Amount:   q.Kline.Amount.Float64(),
 			Bid:      levelsToJSON(q.BuyLevel),
 			Ask:      levelsToJSON(q.SellLevel),
 		}
 		if w, ok := wins[code]; ok {
-			ratio, basis := w.Ratio(nowMinute, int64(q.TotalHand))
+			ratio, basis := w.Ratio(nowMinute, q.Kline.Volume)
 			if basis > 0 {
 				r := ratio
 				tick.VolumeRatio = &r
@@ -342,7 +342,7 @@ func (b *Broker) preheat(code string, basisDays int) {
 	for retry := 0; retry < 3; retry++ {
 		// 直接复用 manager.Pool: 它本身是 4 slot, fan-out 模式下
 		// 预热任务和 pollOnce 竞争同一个池, 互不阻塞是预期的
-		err = manager.Pool.Do(func(c *tdx.Client) error {
+		err = manager.Do(func(c *tdx.Client) error {
 			var e error
 			resp, e = c.GetKlineMinuteAll(code)
 			return e
@@ -431,10 +431,10 @@ func (b *Broker) WindowedCodes() []map[string]any {
 	out := make([]map[string]any, 0, len(b.windows))
 	for code, w := range b.windows {
 		out = append(out, map[string]any{
-			"code":        code,
-			"days":        len(w.Days),
-			"base_dates":  w.BaseDates,
-			"built_at":    w.BuiltAt.Unix(),
+			"code":       code,
+			"days":       len(w.Days),
+			"base_dates": w.BaseDates,
+			"built_at":   w.BuiltAt.Unix(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -682,9 +682,9 @@ func handleRealtimePreheat(w http.ResponseWriter, r *http.Request) {
 	}
 	realtimeBroker.PreheatCodes(req.Codes, req.RatioBasis)
 	successResponse(w, map[string]any{
-		"requested":   req.Codes,
-		"preheating":  true,
-		"stats":       realtimeBroker.Stats(),
+		"requested":  req.Codes,
+		"preheating": true,
+		"stats":      realtimeBroker.Stats(),
 	})
 }
 

@@ -35,13 +35,8 @@ func (historyTrade) Frame(date, code string, start, count uint16) (*Frame, error
 }
 
 func (historyTrade) Decode(bs []byte, c TradeCache) (*TradeResp, error) {
-	if len(bs) < 2 {
+	if len(bs) < 6 {
 		return nil, errors.New("数据长度不足")
-	}
-
-	_, number, err := DecodeCode(c.Code)
-	if err != nil {
-		return nil, err
 	}
 
 	resp := &TradeResp{
@@ -63,7 +58,7 @@ func (historyTrade) Decode(bs []byte, c TradeCache) (*TradeResp, error) {
 		var sub Price
 		bs, sub = GetPrice(bs[2:])
 		lastPrice += sub * 10 //把分转成厘
-		mt.Price = lastPrice / basePrice(number)
+		mt.Price = lastPrice / basePrice(c.Code)
 		bs, mt.Volume = CutInt(bs)
 		bs, mt.Status = CutInt(bs)
 		bs, _ = CutInt(bs) //这个得到的是0，不知道是啥

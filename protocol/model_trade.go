@@ -19,7 +19,7 @@ type TradeResp struct {
 	List  Trades
 }
 
-// Trade 分时成交，todo 时间没有到秒，客户端上也没有,东方客户端能显示秒
+// Trade 分时成交, 时间没有到秒，客户端上也没有,东方客户端能显示秒
 type Trade struct {
 	Time   time.Time //时间, 09:30
 	Price  Price     //价格
@@ -89,11 +89,6 @@ func (trade) Frame(code string, start, count uint16) (*Frame, error) {
 
 func (trade) Decode(bs []byte, c TradeCache) (*TradeResp, error) {
 
-	_, code, err := DecodeCode(c.Code)
-	if err != nil {
-		return nil, err
-	}
-
 	if len(bs) < 2 {
 		return nil, errors.New("数据长度不足")
 	}
@@ -116,7 +111,7 @@ func (trade) Decode(bs []byte, c TradeCache) (*TradeResp, error) {
 		var sub Price
 		bs, sub = GetPrice(bs[2:])
 		lastPrice += sub * 10 //把分转换成厘
-		mt.Price = lastPrice / basePrice(code)
+		mt.Price = lastPrice / basePrice(c.Code)
 		bs, mt.Volume = CutInt(bs)
 		bs, mt.Number = CutInt(bs)
 		bs, mt.Status = CutInt(bs)
@@ -128,6 +123,19 @@ func (trade) Decode(bs []byte, c TradeCache) (*TradeResp, error) {
 }
 
 type Trades []*Trade
+
+// Volume2 内(主动卖)外(主动买)盘成交量,不准确,能用
+func (this Trades) Volume2() (sell int64, buy int64) {
+	for _, v := range this {
+		switch v.Status {
+		case 0: //买
+			buy += int64(v.Volume) * 100
+		case 1: //卖
+			sell += int64(v.Volume) * 100
+		}
+	}
+	return
+}
 
 // Klines 合并分时成交成k线
 func (this Trades) Klines() Klines {
@@ -182,6 +190,7 @@ func (this Trades) Kline(t time.Time, last Price) *Kline {
 		}
 		k.Close = v.Price
 		k.Volume += int64(v.Volume)
+		k.Order += v.Number
 		k.Amount += v.Price * Price(v.Volume) * 100
 		first++
 	}
@@ -190,6 +199,7 @@ func (this Trades) Kline(t time.Time, last Price) *Kline {
 
 // kline1 生成一分钟k线,一天
 func (this Trades) klinesForDay(date time.Time) Klines {
+	_929 := 569  //9:25 的分钟
 	_930 := 570  //9:30 的分钟
 	_1130 := 690 //11:30 的分钟
 	_1300 := 780 //13:00 的分钟
@@ -197,7 +207,7 @@ func (this Trades) klinesForDay(date time.Time) Klines {
 	keys := []int(nil)
 	//早上
 	m := map[int]Trades{}
-	for i := 1; i <= 120; i++ {
+	for i := 0; i <= 120; i++ {
 		keys = append(keys, _930+i)
 		m[_930+i] = []*Trade{}
 	}
@@ -217,7 +227,7 @@ func (this Trades) klinesForDay(date time.Time) Klines {
 	//分组,按
 	for _, v := range this {
 		ms := minutes(v.Time)
-		t := conv.Select(ms < _930, _930, ms)
+		t := conv.Select(ms < _929, _929, ms)
 		t++
 		t = conv.Select(t > _1130 && t <= _1300, _1130, t)
 		t = conv.Select(t > _1500, _1500, t)
@@ -232,6 +242,12 @@ func (this Trades) klinesForDay(date time.Time) Klines {
 	}
 	return ls
 }
+
+/*
+
+
+
+ */
 
 type TradeCache struct {
 	Date string //日期

@@ -38,34 +38,34 @@ func init() {
 	if err = os.MkdirAll(tdx.DefaultDatabaseDir, 0755); err != nil {
 		log.Printf("创建数据目录失败: %v", err)
 	}
-	if codes, err := tdx.NewCodesSqlite(client); err != nil {
+	// 上游 NewCodes: 加载本地 sqlite 缓存 + Updated 节点判断 + NewTimer 立即/定时更新,
+	// 启动即完成首次同步(当天已同步则直接用缓存), 不需要再手动 Update
+	var codes *tdx.Codes
+	if codes, err = tdx.NewCodesSqlite(tdx.WithCodesClient(client)); err != nil {
 		log.Printf("初始化代码库失败: %v", err)
 	} else {
 		tdx.DefaultCodes = codes
-		// NewCodesSqlite 内部已自动 Update 一次 (codes.go:78-122, 通过 Updated 节点判断),
-		// 不需要再额外调一次
-		log.Printf("已加载股票代码，共 %d 条", len(tdx.DefaultCodes.Map))
+		n := 0
+		for range codes.Iter() {
+			n++
+		}
+		log.Printf("已加载股票代码，共 %d 条", n)
 	}
 
-	manager, err = tdx.NewManage(&tdx.ManageConfig{
-		Number: 4,
-	})
+	// 数据管理器: 4 连接池; codes 复用上面的实例, 避免两个引擎写同一个 codes.db
+	manager, err = tdx.NewManage(
+		tdx.WithClients(4),
+		tdx.WithCodes(codes),
+	)
 	if err != nil {
 		log.Fatalf("初始化数据管理器失败: %v", err)
 	}
-	if err := manager.Codes.Update(); err != nil {
-		log.Printf("更新管理器代码库失败: %v", err)
-	}
-	if err := manager.Workday.Update(); err != nil {
-		log.Printf("更新交易日数据失败: %v", err)
-	}
-	manager.Cron.Start()
 
 	// 初始化 gbbq 管理器 (在 manager 之后)
-	// 优先使用本地 codes 缓存,避免 TDX 协议限流导致 GetStockAll() 返回 0
+	// 优先使用本地 codes 缓存,避免 TDX 协议限流导致代码列表拉取返回 0
 	var stockCodes []string
 	if tdx.DefaultCodes != nil {
-		stockCodes = tdx.DefaultCodes.GetStocks()
+		stockCodes = tdx.DefaultCodes.GetStockCodes()
 		log.Printf("从本地 codes 缓存加载 %d 只股票代码", len(stockCodes))
 	}
 	gbbq, err = tdx.NewGbbq(
@@ -184,9 +184,9 @@ func handleGetKline(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, resp)
 }
 
-// getQfqKlineDay 获取前复权日K线数据
+// getQfqKlineDay 获取前复权日K线数据(同花顺)
 func getQfqKlineDay(code string) (*protocol.KlineResp, error) {
-	// 使用同花顺API获取前复权数据
+	// 使用同花顺API获取前复权数据(上游已直接返回 protocol.Klines)
 	klines, err := extend.GetTHSDayKline(code, extend.THS_QFQ)
 	if err != nil {
 		return nil, fmt.Errorf("获取前复权数据失败: %w", err)
@@ -196,27 +196,17 @@ func getQfqKlineDay(code string) (*protocol.KlineResp, error) {
 		return nil, fmt.Errorf("同花顺前复权数据为空")
 	}
 
-	// 转换为 protocol.KlineResp 格式
 	resp := &protocol.KlineResp{
 		Count: uint16(len(klines)),
 		List:  make([]*protocol.Kline, 0, len(klines)),
 	}
 
 	for i, k := range klines {
-		pk := &protocol.Kline{
-			Time:   time.Unix(k.Date, 0),
-			Open:   k.Open,
-			High:   k.High,
-			Low:    k.Low,
-			Close:  k.Close,
-			Volume: k.Volume,
-			Amount: k.Amount,
-		}
 		// 设置昨收价（使用上一条K线的收盘价）
 		if i > 0 {
-			pk.Last = klines[i-1].Close
+			k.Last = klines[i-1].Close
 		}
-		resp.List = append(resp.List, pk)
+		resp.List = append(resp.List, k)
 	}
 
 	return resp, nil
@@ -502,9 +492,10 @@ func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Codes     []string `json:"codes"`
-		Tables    []string `json:"tables"`
+		Types     []string `json:"types"`  // day / minute
+		Tables    []string `json:"tables"` // 兼容旧参数, 等价于 types
 		Dir       string   `json:"dir"`
-		Limit     int      `json:"limit"`
+		Limit     int      `json:"limit"` // 兼容旧参数, 上游引擎无对应能力, 忽略
 		StartDate string   `json:"start_date"`
 	}
 
@@ -513,21 +504,20 @@ func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tables := req.Tables
-	if len(tables) == 0 {
-		tables = []string{extend.Day}
-	} else {
-		valid := make([]string, 0, len(tables))
-		for _, v := range tables {
-			if _, ok := extend.KlineTableMap[v]; ok {
-				valid = append(valid, v)
-			}
+	// 上游引擎只有 day/minute 两种类型; 旧的 minute5/week/month 等表名不再支持
+	rawTypes := append([]string{}, req.Types...)
+	rawTypes = append(rawTypes, req.Tables...)
+	validTypes := make([]string, 0, len(rawTypes))
+	for _, v := range rawTypes {
+		switch v {
+		case extend.Day:
+			validTypes = append(validTypes, extend.Day)
+		case "minute", "min", "minute1":
+			validTypes = append(validTypes, extend.Minute)
 		}
-		if len(valid) == 0 {
-			errorResponse(w, "tables参数无效")
-			return
-		}
-		tables = valid
+	}
+	if len(validTypes) == 0 {
+		validTypes = []string{extend.Day, extend.Minute}
 	}
 
 	dir := req.Dir
@@ -552,17 +542,24 @@ func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := extend.PullKlineConfig{
-		Codes:   req.Codes,
-		Tables:  tables,
-		Dir:     dir,
-		Limit:   req.Limit,
-		StartAt: startAt,
+		Codes:      req.Codes,
+		Types:      validTypes,
+		Dir:        dir,
+		Goroutines: 4,
+		StartAt:    startAt,
 	}
 
-	puller := extend.NewPullKline(cfg)
+	puller, perr := extend.NewPullKline(cfg)
+	if perr != nil {
+		errorResponse(w, "创建拉取器失败: "+perr.Error())
+		return
+	}
 
 	taskID := taskManager.Run("pull_kline", func(ctx context.Context) error {
-		return puller.Run(ctx, manager)
+		// 上游 Update 无 ctx 参数: 取消任务仅改变任务状态, 无法中断进行中的拉取;
+		// must=true: 显式任务不受"仅交易日"限制 (当日重复任务经由 Updated 节点幂等跳过)
+		_ = ctx
+		return puller.Update(manager, true)
 	})
 
 	successResponse(w, map[string]string{
@@ -681,9 +678,11 @@ func splitCodes(param string) []string {
 // 语义: "服务可以接收 HTTP 请求" — 与 /api/health 的差异:
 //   - /api/health: 进程级健康检查, 给 docker healthcheck / k8s liveness 用
 //   - /api/ready:  就绪检查, 给 k8s readiness probe / 反向代理 upstream 用
+//
 // §3 之后, gbbq 缓存按需拉取, 启动时不再阻塞; 因此 ready 与启动时间挂钩即可.
 // 注: gbbq 缓存是否为空不再阻塞 ready — 缓存空时 /api/turnover 等端点仍会 200,
-//     调用方按需 POST /api/gbbq/refresh 触发全量 / 单只拉取.
+//
+//	调用方按需 POST /api/gbbq/refresh 触发全量 / 单只拉取.
 func handleReady(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, map[string]interface{}{
 		"ready":          true,
@@ -701,41 +700,6 @@ func getMinuteWithFallback(code, date string) (*protocol.MinuteResp, string, err
 
 	resp, err := client.GetHistoryMinute(target, code)
 	return resp, target, err
-	if date != "" {
-		resp, err := client.GetHistoryMinute(date, code)
-		return resp, date, err
-	}
-
-	today := time.Now()
-	const maxLookback = 10
-
-	var lastResp *protocol.MinuteResp
-	var lastDate string
-	var lastErr error
-
-	for i := 0; i < maxLookback; i++ {
-		currentDate := today.AddDate(0, 0, -i).Format("20060102")
-		resp, err := client.GetHistoryMinute(currentDate, code)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp != nil {
-			if len(resp.List) > 0 && resp.Count > 0 {
-				return resp, currentDate, nil
-			}
-			if lastResp == nil {
-				lastResp = resp
-				lastDate = currentDate
-			}
-		}
-	}
-
-	if lastResp != nil {
-		return lastResp, lastDate, nil
-	}
-
-	return nil, "", lastErr
 }
 
 func main() {

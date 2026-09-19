@@ -139,12 +139,12 @@ function displayQuote(quote) {
     document.getElementById('stockName').textContent = quote.Code || '--';
     document.getElementById('stockCode2').textContent = quote.Code || '--';
     
-    // 计算价格（从厘转为元）
-    const lastPrice = parseFloat(quote.K.Last) / 1000;
-    const currentPrice = parseFloat(quote.K.Close) / 1000;
-    const openPrice = parseFloat(quote.K.Open) / 1000;
-    const highPrice = parseFloat(quote.K.High) / 1000;
-    const lowPrice = parseFloat(quote.K.Low) / 1000;
+    // 计算价格（从厘转为元）— 上游 K/Kline 合并后字段名为 Kline
+    const lastPrice = parseFloat(quote.Kline.Last) / 1000;
+    const currentPrice = parseFloat(quote.Kline.Close) / 1000;
+    const openPrice = parseFloat(quote.Kline.Open) / 1000;
+    const highPrice = parseFloat(quote.Kline.High) / 1000;
+    const lowPrice = parseFloat(quote.Kline.Low) / 1000;
     
     const priceChange = currentPrice - lastPrice;
     const priceChangePercent = lastPrice > 0 ? (priceChange / lastPrice * 100) : 0;
@@ -153,8 +153,8 @@ function displayQuote(quote) {
     document.getElementById('lastPrice').textContent = currentPrice.toFixed(2);
     document.getElementById('priceChange').textContent = priceChange > 0 ? '+' + priceChange.toFixed(2) : priceChange.toFixed(2);
     document.getElementById('priceChangePercent').textContent = priceChangePercent > 0 ? '+' + priceChangePercent.toFixed(2) + '%' : priceChangePercent.toFixed(2) + '%';
-    document.getElementById('volume').textContent = formatAmount(quote.TotalHand * 100);
-    document.getElementById('amount').textContent = formatAmount(quote.Amount);
+    document.getElementById('volume').textContent = formatAmount(quote.Kline.Volume * 100);
+    document.getElementById('amount').textContent = formatAmount(quote.Kline.Amount / 1000);
     document.getElementById('openPrice').textContent = openPrice.toFixed(2);
     document.getElementById('highPrice').textContent = highPrice.toFixed(2);
     document.getElementById('lowPrice').textContent = lowPrice.toFixed(2);
