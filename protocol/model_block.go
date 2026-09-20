@@ -150,6 +150,7 @@ type Block struct {
 	Name  string
 	Index string // 板块指数代码(id), 如 880xxx; 默认空, FillBlockIndex 回填
 	Type  uint16
+	Ref   string // 行业分类码: 合成行业板块(hy)=通达信 T 码, 合成申万板块(sw)=申万 X 码; 文件直读板块(gn/fg/zs/sp)为空
 	Codes []string
 }
 

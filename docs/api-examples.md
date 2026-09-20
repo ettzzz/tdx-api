@@ -93,12 +93,18 @@ curl "http://localhost:8080/api/blocks?type=gn,hy" # 只要概念+行业
     "fetched_at": "2026-09-20 12:02:27",
     "errors": {},
     "list": [
-      {"name": "白酒", "index": "880381", "type": 2, "type_name": "行业板块",
+      {"name": "白酒", "index": "880381", "ref": "T0305", "type": 2, "type_name": "行业板块",
        "source": "hy", "code_count": 19, "codes": ["600519", "000568", "..."]}
     ]
   }
 }
 ```
+
+> **ref 字段**（2026-09-20 新增）：板块的行业分类码，即合成本板块时 `tdxzs.cfg`/`tdxzs3.cfg`
+> 条目的 Ref——`hy` 为通达信 T 码、`sw` 为申万 X 码，与 `/api/tdx-hy` 返回的 `tdx_hy`/`sw_hy`
+> 是同一编码体系（个股码以板块 ref 为前缀，含相等）。`gn`/`fg`/`zs`/`sp` 来自板块文件直读，
+> 无分类码，恒为空串。下游可用它把个股行业归属 join 到板块名（精确相等，或取最长前缀作为
+> 归属到上级板块的口径）。
 
 ### GET /api/tdx-stat — 全市场盘后统计（tdxstat.cfg）
 

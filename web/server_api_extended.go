@@ -1778,6 +1778,7 @@ func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
 type blockItem struct {
 	Name      string   `json:"name"`       // 板块名称
 	Index     string   `json:"index"`      // 板块指数代码(880xxx/881xxx), 指数板块(zs)无此码为空
+	Ref       string   `json:"ref"`        // 行业分类码: hy=通达信 T 码, sw=申万 X 码, gn/fg/zs/sp 为空; 即 /api/tdx-hy 的 tdx_hy/sw_hy 前缀键
 	Type      uint16   `json:"type"`       // 通达信原始类型码
 	TypeName  string   `json:"type_name"`  // 中文类型名
 	Source    string   `json:"source"`     // 来源标识: gn/hy/fg/zs/sp
@@ -1808,6 +1809,7 @@ func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 		for _, b := range snap.blocks[t.key] {
 			items = append(items, &blockItem{
 				Name: b.Name, Index: b.Index, Type: b.Type,
+				Ref:   b.Ref,
 				TypeName: t.typeName, Source: t.key,
 				CodeCount: len(b.Codes), Codes: b.Codes,
 			})
@@ -1829,6 +1831,7 @@ func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 		for _, b := range snap.sw {
 			items = append(items, &blockItem{
 				Name: b.Name, Index: b.Index, Type: b.Type,
+				Ref:   b.Ref,
 				TypeName: zhbBlockTypeName("sw"), Source: "sw",
 				CodeCount: len(b.Codes), Codes: b.Codes,
 			})

@@ -203,6 +203,7 @@ func zhbSynthHyBlocks(zs []*protocol.TdxZs, hy []*protocol.TdxHy) []*protocol.Bl
 			Name:  p.z.Name,
 			Index: p.z.Code, // 880xxx, 直接来自 tdxzs.cfg
 			Type:  p.z.Type,
+			Ref:   p.z.Ref, // 通达信行业 T 码, 供下游 join 个股归属(/api/tdx-hy tdx_hy)
 			Codes: p.codes,
 		})
 	}
@@ -243,6 +244,7 @@ func zhbSynthSwBlocks(zs []*protocol.TdxZs, hy []*protocol.TdxHy) []*protocol.Bl
 			Name:  p.z.Name,
 			Index: p.z.Code, // 881xxx, 直接来自 tdxzs3.cfg
 			Type:  p.z.Type,
+			Ref:   p.z.Ref, // 申万行业 X 码, 供下游 join 个股归属(/api/tdx-hy sw_hy)
 			Codes: p.codes,
 		})
 	}
