@@ -13,18 +13,21 @@ import (
 
 var (
 
-	// Hosts 所有服务器地址(2024-11-30测试通过)
+	// Hosts 所有服务器地址。
+	// 拼接顺序按 2026-09-20 全量 TCP 拨号实测(orange pi 开发机): 北京 8-13ms 全部最快,
+	// 武汉 24.7ms, 上海 29-34ms, 广州 41-50ms, 故 北京→武汉→上海→广州;
+	// web 层启动时另有 SortHosts 动态测速兜底(hosts.go SortHosts), 静态顺序仅为非 web 使用方与测速失败时的回退。
 	Hosts = func() []string {
-		lenSH := len(SHHosts)
 		lenBJ := len(BJHosts)
-		lenGZ := len(GZHosts)
 		lenWH := len(WHHosts)
+		lenSH := len(SHHosts)
+		lenGZ := len(GZHosts)
 
-		ls := make([]string, lenSH+lenBJ+lenGZ+lenWH)
-		copy(ls[:lenSH], SHHosts)
-		copy(ls[lenSH:lenSH+lenBJ], BJHosts)
-		copy(ls[lenSH+lenBJ:lenSH+lenBJ+lenGZ], GZHosts)
-		copy(ls[lenSH+lenBJ+lenGZ:lenSH+lenBJ+lenGZ+lenWH], WHHosts)
+		ls := make([]string, lenBJ+lenWH+lenSH+lenGZ)
+		copy(ls[:lenBJ], BJHosts)
+		copy(ls[lenBJ:lenBJ+lenWH], WHHosts)
+		copy(ls[lenBJ+lenWH:lenBJ+lenWH+lenSH], SHHosts)
+		copy(ls[lenBJ+lenWH+lenSH:lenBJ+lenWH+lenSH+lenGZ], GZHosts)
 		return ls
 	}()
 

@@ -1783,6 +1783,38 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 ---
 
+## 📦 盘后数据接口 (v2.1.0, 2026-09-20)
+
+数据源为通达信 `zhb.zip` 盘后包（每交易日一份，收盘后更新）。完整示例见 `docs/api-examples.md`。
+
+**共享缓存语义**：四个 GET 端点共享一份服务端缓存；首次调用或数据日期早于「最近已收盘交易日」（16:00 就绪线）时**同步触发刷新（实测约 2-8 秒，超时建议 ≥30s）**；命中缓存毫秒级返回。`POST /api/blocks/refresh` 强制刷新。单数据源失败不阻断整体，失败原因随响应 `errors` 透出。
+
+| 接口 | 说明 | 响应体积 |
+|---|---|---|
+| `GET /api/blocks?type=gn,hy,fg,zs,sp` | 行业/概念/风格地域/指数/专业板块全量及成分股（`codes` 统一 6 位） | ~1.2MB |
+| `GET /api/tdx-stat` | 全市场盘后统计：PETTM/静态PE/股息率/连涨连跌/5·10·20·60日涨幅/YTD + 35 槽位原始字段 | ~3.5MB |
+| `GET /api/tdx-stat2` | 全市场资金流向+板块归属：今昨成交额/IPO价/52周高低/所属板块 + 21 槽位原始字段 | ~2.6MB |
+| `GET /api/tdx-hy?code=` | 个股行业归属：通达信码(T前缀) + 申万码(X前缀)，沪深 5663 只 | <1MB |
+| `POST /api/blocks/refresh` | 强制刷新共享缓存，返回各数据源条目数 | 小 |
+
+**字段核验状态**（已核验 = 上游对同源日线/东财实盘交叉验证，详见 `protocol/model_stat.go` 注释）：
+
+| 字段 | 状态 |
+|---|---|
+| tdxstat: `pettm`/`pe_static` | 已核验，近乎精确（CV≈0.012） |
+| tdxstat: `div_yield` | 已核验，**通达信口径**（与第三方口径可能异） |
+| tdxstat: `trend_days`/`change_pct`/`chg5`/`chg10`/`chg60` | 已核验，精确（MAE≈0） |
+| tdxstat: `chg20`/`chg_ytd` | 已核验，MAE 0.23 / 0.73（YTD 基准上年末） |
+| tdxstat2: `amount_today`/`amount_prev`/`ipo_price`/`high_52w`/`low_52w`/`block_index` | 已核验 |
+| 两接口的 `fields` 原始数组 | **未核验**，槽位说明见响应 `field_names`（仅部分槽位有语义） |
+
+**已知限制**：
+- `block_hy.dat`（行业板块原始文件）当前各地域服务器均不再提供（2026-09-20 实测），`hy` 类板块由服务端从 `tdxzs.cfg`（Ref=T码）× `tdxhy.cfg`（个股T码，层级前缀匹配）合成，覆盖率 100%。
+- stat/stat2 覆盖 8055 行（含北交所等），`tdx-hy` 覆盖 5663 行（仅沪深）。
+- zhb.zip 不含融资融券数据；板块成分属盘后口径，不宜盘中做成分变动判断。
+
+---
+
 ## 🔒 错误码说明
 
 | code | message | 说明 |
@@ -1825,6 +1857,10 @@ curl -X POST http://localhost:8080/api/batch-quote \
 ---
 
 ## 📝 更新日志
+
+### v2.1.0 (2026-09-20)
+- ✅ 盘后数据五端点：`/api/blocks(+refresh)`、`/api/tdx-stat`、`/api/tdx-stat2`、`/api/tdx-hy`（zhb.zip 盘后包，共享缓存 + 自动过期刷新）
+- ✅ 启动时主机测速（SortHosts）+ hosts 表按实测调序（北京腾讯云 8-13ms 最优）
 
 ### v1.0.0 (2024-11-03)
 - ✅ 实现基础6个API接口

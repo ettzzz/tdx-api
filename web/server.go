@@ -27,6 +27,23 @@ var (
 
 func init() {
 	var err error
+	// 启动测速: 对全部服务器 TCP 拨号排序并写回包级 Hosts,
+	// 后续 DialDefault(range-dial 顺序遍历) 优先命中最快主机。
+	// 加超时守卫: SortHosts 在全部主机不可达时会阻塞在"至少一个成功"的等待上, 不能让它挂死启动。
+	type sortResult = []string // SortHosts 结果, 经 channel 传递以便加超时守卫
+	chSort := make(chan sortResult, 1)
+	go func() { chSort <- tdx.SortHosts(2 * time.Second) }()
+	select {
+	case hosts := <-chSort:
+		if len(hosts) > 0 {
+			log.Printf("主机测速完成: 可用 %d 台, 最快: %s", len(hosts), hosts[0])
+		} else {
+			log.Println("主机测速完成: 无可用主机, 使用默认顺序")
+		}
+	case <-time.After(5 * time.Second):
+		log.Println("主机测速超时(5s), 使用默认主机顺序")
+	}
+
 	// 连接通达信服务器
 	client, err = tdx.DialDefault(tdx.WithDebug(false))
 	if err != nil {
@@ -753,6 +770,13 @@ func main() {
 	http.HandleFunc("/api/realtime/health", handleRealtimeHealth)
 	http.HandleFunc("/api/realtime/preheat", handleRealtimePreheat)
 	http.HandleFunc("/api/realtime/codes", handleRealtimeCodes)
+
+	// 盘后数据 (zhb.zip 盘后包, 见 server_zhb.go; 首次/过期 GET 同步刷新约 6-8s)
+	http.HandleFunc("/api/blocks", handleGetBlocks)
+	http.HandleFunc("/api/blocks/refresh", handleRefreshZhb)
+	http.HandleFunc("/api/tdx-stat", handleGetTdxStat)
+	http.HandleFunc("/api/tdx-stat2", handleGetTdxStat2)
+	http.HandleFunc("/api/tdx-hy", handleGetTdxHy)
 
 	port := ":8080"
 	if p := os.Getenv("PORT"); p != "" {

@@ -158,6 +158,12 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/market-snapshot` - 全市场 5300+ 只股票当日 OHLCV 断面(`client.GetDaySnapshot`,**同步阻塞** 4-15 分钟,客户端要 `curl -m 900`);`tdx-api` 纯中转,不复权/不计算/不入库
   - `GET /api/health` - 进程级健康检查(PLAN_v2 §2.3.3 增强版):返回 `status` / `time`(unix 秒) / `uptime_seconds` / `gbbq_cache_size` / `goroutines` / `memory_mb`;已切到标准信封,给 docker healthcheck / k8s liveness 用
   - `GET /api/ready` - 就绪检查(PLAN_v2 §2.3.4 新增):返回 `{ready:true, uptime_seconds}`;gbbq 缓存是否为空不再阻塞 ready,给 k8s readiness probe / 反向代理 upstream 用
+  - 盘后数据端点(v2.1.0, 2026-09-20, 实现在 `web/server_zhb.go`, 数据源 zhb.zip 盘后包, 完整字段核验状态见 `API_接口文档.md` "盘后数据接口"节):
+    - `GET /api/blocks?type=gn,hy,fg,zs,sp` - 行业/概念/风格地域/指数/专业板块全量及成分股(codes 统一 6 位);`block_hy.dat` 已无服务器提供,hy 类由 tdxzs.cfg(Ref=T码)×tdxhy.cfg(个股T码前缀匹配)服务端合成
+    - `GET /api/tdx-stat` / `GET /api/tdx-stat2` - 全市场盘后统计/资金流向+板块归属(8055 行, 含 35/21 槽位原始字段与 field_names 槽位说明)
+    - `GET /api/tdx-hy?code=` - 个股行业归属(通达信 T 码 + 申万 X 码, 沪深 5663 只)
+    - `POST /api/blocks/refresh` - 强制刷新盘后缓存(与 gbbq/refresh 同模式)
+    - 四个 GET 共享一份缓存:首次或数据日期早于最近已收盘交易日(16:00 就绪线)时**同步触发刷新,实测约 2-8s,客户端超时 ≥30s**;命中缓存毫秒级。列表字段统一小写 `list`(下游要求,勿用大写 `List`)
   - 所有上述端点共享 `parseKlineDateRange` / `inDateRange` 辅助函数(`web/server_api_extended.go`)
   - 实时行情 NDJSON (commit eccd882 之后, 见 `docs/realtime-usage.md` 完整使用指南):
     - `GET /api/realtime/quote?codes=600000.SH,000001.SZ` - **NDJSON 流式推送**, 1 秒 1 轮批量 `client.GetQuote`; fan-out 架构只占 1 个 Pool slot; 含价/量/5档/盘中量比

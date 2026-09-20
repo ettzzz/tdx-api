@@ -54,6 +54,16 @@ ENDPOINTS = [
     # §4: 全市场当日 K 断面, 5300+ 只股票单线程串行, 4-15 分钟
     # 默认不跑(慢测试), 需用 --slow 启用
     ("market_snapshot", "GET", "/api/market-snapshot", {"timeout": 900}, True),
+    # ==== 盘后数据端点(zhb.zip 盘后包, 2026-09-20 v2.1.0) ====
+    # 首次调用会同步触发缓存刷新(实测约 2-8s), 之后命中内存缓存秒回
+    ("blocks", "GET", "/api/blocks", {"timeout": 60}),
+    ("blocks_type_filter", "GET", "/api/blocks?type=gn,hy", {"timeout": 30}),
+    ("tdx_stat", "GET", "/api/tdx-stat", {"timeout": 60}),
+    ("tdx_stat2", "GET", "/api/tdx-stat2", {"timeout": 60}),
+    ("tdx_hy", "GET", "/api/tdx-hy", {"timeout": 30}),
+    ("tdx_hy_one", "GET", "/api/tdx-hy?code=600519", {"timeout": 30}),
+    # 强制刷新(同步阻塞约 2-8s)
+    ("blocks_refresh", "POST", "/api/blocks/refresh", {"timeout": 60}),
 ]
 
 

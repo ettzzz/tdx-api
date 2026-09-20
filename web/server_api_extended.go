@@ -1771,3 +1771,222 @@ func handleMarketSnapshot(w http.ResponseWriter, r *http.Request) {
 	snapshotCache.Store(today, resp)
 	successResponse(w, resp)
 }
+
+// ===================== 盘后数据端点(zhb 缓存, 见 server_zhb.go) =====================
+
+// blockItem /api/blocks 单个板块条目。
+type blockItem struct {
+	Name      string   `json:"name"`       // 板块名称
+	Index     string   `json:"index"`      // 板块指数代码(880xxx/881xxx), 指数板块(zs)无此码为空
+	Type      uint16   `json:"type"`       // 通达信原始类型码
+	TypeName  string   `json:"type_name"`  // 中文类型名
+	Source    string   `json:"source"`     // 来源标识: gn/hy/fg/zs/sp
+	CodeCount int      `json:"code_count"` // 成分股数量
+	Codes     []string `json:"codes"`      // 成分股, 6 位代码(sp 的 7 位市场前缀格式已归一)
+}
+
+// handleGetBlocks 行业/概念/风格地域/指数/专业板块全量及成分股。
+// 数据源 zhb.zip 盘后包(每交易日一份), 首次或过期请求会同步触发刷新(实测约 6-8s, 客户端超时 >=30s)。
+// ?type=gn,hy,fg,zs,sp 过滤, 缺省返回全部 5 类。
+func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
+	want, errMsg := zhbQueryTypes(r.URL.Query().Get("type"))
+	if errMsg != "" {
+		errorResponse(w, errMsg)
+		return
+	}
+	snap, err := zhbGet(false)
+	if err != nil {
+		errorResponse(w, "盘后数据不可用: "+err.Error())
+		return
+	}
+	all := len(want) == 0
+	items := make([]*blockItem, 0, 1024)
+	for _, t := range zhbBlockTypes {
+		if !all && !want[t.key] {
+			continue
+		}
+		for _, b := range snap.blocks[t.key] {
+			items = append(items, &blockItem{
+				Name: b.Name, Index: b.Index, Type: b.Type,
+				TypeName: t.typeName, Source: t.key,
+				CodeCount: len(b.Codes), Codes: b.Codes,
+			})
+		}
+	}
+	if all || want["sp"] {
+		for _, b := range snap.sp {
+			codes := make([]string, 0, len(b.Codes))
+			for _, c := range b.Codes {
+				codes = append(codes, zhbStripMarketCode(c))
+			}
+			items = append(items, &blockItem{
+				Name: b.Name, TypeName: zhbBlockTypeName("sp"), Source: "sp",
+				CodeCount: len(codes), Codes: codes,
+			})
+		}
+	}
+	successResponse(w, map[string]any{
+		"count":      len(items),
+		"stat_date":  snap.statDate,
+		"fetched_at": snap.fetchedAt.Format(time.DateTime),
+		"errors":     snap.errors,
+		"list":       items,
+	})
+}
+
+// tdxStatItem /api/tdx-stat 单行(仅输出已核验命名字段 + 35 槽位原始值)。
+type tdxStatItem struct {
+	Market    uint8    `json:"market"`     // 0=深 1=沪 2=京
+	Code      string   `json:"code"`       // 6 位代码
+	Date      string   `json:"date"`       // 数据日期 YYYYMMDD
+	PETTM     float64  `json:"pettm"`      // 市盈率 TTM(已核验)
+	PEStatic  float64  `json:"pe_static"`  // 静态市盈率(已核验)
+	DivYield  float64  `json:"div_yield"`  // 股息率%(通达信口径, 已核验)
+	TrendDays int      `json:"trend_days"` // 连涨连跌天数, 正涨负跌(已核验)
+	ChangePct float64  `json:"change_pct"` // 当日涨跌幅%(已核验)
+	Chg5      float64  `json:"chg5"`       // 5 日涨跌幅%(已核验)
+	Chg10     float64  `json:"chg10"`      // 10 日涨跌幅%(已核验)
+	Chg20     float64  `json:"chg20"`      // 20 日涨跌幅%(已核验)
+	Chg60     float64  `json:"chg60"`      // 60 日涨跌幅%(已核验)
+	ChgYTD    float64  `json:"chg_ytd"`    // 年初至今涨跌幅%, 基准上年末(已核验)
+	Fields    []string `json:"fields"`     // 全部 35 个原始字段(0 基), 槽位说明见顶层 field_names
+}
+
+// handleGetTdxStat 全市场盘后统计(tdxstat.cfg, 无逐股请求)。
+// 响应约 10MB(8055 行 × 35 槽位), 供下游每日落库沉淀估值/动量历史。
+func handleGetTdxStat(w http.ResponseWriter, r *http.Request) {
+	snap, err := zhbGet(false)
+	if err != nil {
+		errorResponse(w, "盘后数据不可用: "+err.Error())
+		return
+	}
+	list := make([]*tdxStatItem, 0, len(snap.stat))
+	for _, s := range snap.stat {
+		list = append(list, &tdxStatItem{
+			Market: s.Market, Code: s.Code, Date: s.Date,
+			PETTM: s.PETTM, PEStatic: s.PEStatic, DivYield: s.DivYield,
+			TrendDays: s.TrendDays, ChangePct: s.ChangePct,
+			Chg5: s.Chg5, Chg10: s.Chg10, Chg20: s.Chg20, Chg60: s.Chg60, ChgYTD: s.ChgYTD,
+			Fields: s.Fields,
+		})
+	}
+	successResponse(w, map[string]any{
+		"date":        snap.statDate,
+		"count":       len(list),
+		"field_names": zhbFieldStat,
+		"errors":      snap.errors,
+		"list":        list,
+	})
+}
+
+// tdxStat2Item /api/tdx-stat2 单行(仅输出已核验命名字段 + 21 槽位原始值)。
+type tdxStat2Item struct {
+	Market     uint8    `json:"market"`       // 0=深 1=沪 2=京
+	Code       string   `json:"code"`         // 6 位代码
+	Date       string   `json:"date"`         // 数据日期 YYYYMMDD
+	Amount     float64  `json:"amount_today"` // 今日成交额(万元, 已核验)
+	AmountPrev float64  `json:"amount_prev"`  // 昨日成交额(万元, 已核验)
+	IPOPrice   float64  `json:"ipo_price"`    // IPO 发行价(已核验)
+	High52W    float64  `json:"high_52w"`     // 52 周最高价(已核验)
+	Low52W     float64  `json:"low_52w"`      // 52 周最低价(已核验)
+	BlockIndex string   `json:"block_index"`  // 所属/领涨板块指数代码(880xxx, 已核验)
+	Fields     []string `json:"fields"`       // 全部 21 个原始字段(0 基)
+}
+
+// handleGetTdxStat2 全市场资金流向 + 板块归属(tdxstat2.cfg)。
+// 注意: zhb.zip 不含融资融券数据(上游已对东财两融全字段比对确认)。
+func handleGetTdxStat2(w http.ResponseWriter, r *http.Request) {
+	snap, err := zhbGet(false)
+	if err != nil {
+		errorResponse(w, "盘后数据不可用: "+err.Error())
+		return
+	}
+	list := make([]*tdxStat2Item, 0, len(snap.stat2))
+	for _, s := range snap.stat2 {
+		list = append(list, &tdxStat2Item{
+			Market: s.Market, Code: s.Code, Date: s.Date,
+			Amount: s.Amount, AmountPrev: s.AmountPrev,
+			IPOPrice: s.IPOPrice, High52W: s.High52W, Low52W: s.Low52W,
+			BlockIndex: s.BlockIndex,
+			Fields:     s.Fields,
+		})
+	}
+	successResponse(w, map[string]any{
+		"date":        snap.statDate,
+		"count":       len(list),
+		"field_names": zhbFieldStat2,
+		"errors":      snap.errors,
+		"list":        list,
+	})
+}
+
+// tdxHyItem /api/tdx-hy 单行。
+type tdxHyItem struct {
+	Market uint8  `json:"market"` // 0=深 1=沪
+	Code   string `json:"code"`   // 6 位代码
+	TdxHy  string `json:"tdx_hy"` // 通达信新行业代码(T 前缀)
+	SwHy   string `json:"sw_hy"`  // 申万行业代码(X 前缀)
+}
+
+// handleGetTdxHy 全市场个股行业归属(tdxhy.cfg, 通达信行业 + 申万行业)。
+// ?code= 可选单股过滤(600000.SH / sh600000 / 600000 均可)。
+// 覆盖沪深 5663 只(不含北交所); 全市场统计见 /api/tdx-stat(含京市)。
+func handleGetTdxHy(w http.ResponseWriter, r *http.Request) {
+	snap, err := zhbGet(false)
+	if err != nil {
+		errorResponse(w, "盘后数据不可用: "+err.Error())
+		return
+	}
+	var code6 string
+	if param := strings.TrimSpace(r.URL.Query().Get("code")); param != "" {
+		code6 = normalizeCode(param)
+		if code6 == "" {
+			errorResponse(w, "无法识别的股票代码: "+param)
+			return
+		}
+	}
+	list := make([]*tdxHyItem, 0, len(snap.hy))
+	for _, v := range snap.hy {
+		if code6 != "" && v.Code != code6 {
+			continue
+		}
+		list = append(list, &tdxHyItem{Market: v.Market, Code: v.Code, TdxHy: v.TdxHy, SwHy: v.SwHy})
+	}
+	successResponse(w, map[string]any{
+		"count":     len(list),
+		"stat_date": snap.statDate,
+		"errors":    snap.errors,
+		"list":      list,
+	})
+}
+
+// handleRefreshZhb 强制刷新盘后数据缓存(zhb.zip + 板块文件 + 行业归属, 实测约 6-8s)。
+// 与 GET 的自动过期刷新共用同一份缓存; 模式对齐 POST /api/gbbq/refresh。
+func handleRefreshZhb(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, "只支持 POST 请求")
+		return
+	}
+	start := time.Now()
+	snap, err := zhbGet(true)
+	if err != nil {
+		errorResponse(w, "刷新失败: "+err.Error())
+		return
+	}
+	successResponse(w, map[string]any{
+		"duration_ms": time.Since(start).Milliseconds(),
+		"stat_date":   snap.statDate,
+		"fetched_at":  snap.fetchedAt.Format(time.DateTime),
+		"errors":      snap.errors,
+		"counts": map[string]int{
+			"blocks_gn": len(snap.blocks["gn"]),
+			"blocks_hy": len(snap.blocks["hy"]),
+			"blocks_fg": len(snap.blocks["fg"]),
+			"blocks_zs": len(snap.blocks["zs"]),
+			"sp":        len(snap.sp),
+			"stat":      len(snap.stat),
+			"stat2":     len(snap.stat2),
+			"hy":        len(snap.hy),
+		},
+	})
+}

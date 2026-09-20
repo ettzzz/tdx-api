@@ -20,6 +20,9 @@ var (
 	// ExHosts 扩展行情所有服务器地址(connect.cfg [DSHOST])
 	// 广州段在前:2026-06 实测仅 116.205.143.214(广州双线1)完全可用,置首位使
 	// range-dial 默认优先命中;其余多为连接超时/受限节点,可用 SortExHosts 重排。
+	// 2026-09-20 复测(orange pi 开发机): 16/16 台 TCP 层全部可达(28.9-50.8ms), 上海段最快
+	// (123.60.173.210 28.9ms), 广州段反而最慢(44.5-45.6ms); 但 TCP 可达≠协议层可用,
+	// 排序依据仍维持上述协议层实测结论, 未调整顺序。
 	ExHosts = func() []string {
 		lenGZ := len(ExGZHosts)
 		lenSH := len(ExSHHosts)
