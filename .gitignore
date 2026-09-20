@@ -28,3 +28,6 @@ env/
 # PROCESS.md 是工作日志 (按用户要求不入版本控制)
 PLAN*.md
 PROCESS.md
+
+# 上下游沟通文档: 临时协作场所, 不入库(本地保留)
+_UPDATE_FUNCTIONS.md
