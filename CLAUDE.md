@@ -159,7 +159,7 @@ extend/                   ← higher-level utilities built on tdx
   - `GET /api/health` - 进程级健康检查(PLAN_v2 §2.3.3 增强版):返回 `status` / `time`(unix 秒) / `uptime_seconds` / `gbbq_cache_size` / `goroutines` / `memory_mb`;已切到标准信封,给 docker healthcheck / k8s liveness 用
   - `GET /api/ready` - 就绪检查(PLAN_v2 §2.3.4 新增):返回 `{ready:true, uptime_seconds}`;gbbq 缓存是否为空不再阻塞 ready,给 k8s readiness probe / 反向代理 upstream 用
   - 盘后数据端点(v2.1.0, 2026-09-20, 实现在 `web/server_zhb.go`, 数据源 zhb.zip 盘后包, 完整字段核验状态见 `API_接口文档.md` "盘后数据接口"节):
-    - `GET /api/blocks?type=gn,hy,fg,zs,sp` - 行业/概念/风格地域/指数/专业板块全量及成分股(codes 统一 6 位);`block_hy.dat` 已无服务器提供,hy 类由 tdxzs.cfg(Ref=T码)×tdxhy.cfg(个股T码前缀匹配)服务端合成
+    - `GET /api/blocks?type=gn,hy,fg,zs,sp,sw` - 概念/通达信行业/风格地域/指数/专业/申万行业板块全量及成分股(codes 统一 6 位);`block_hy.dat` 已无服务器提供,hy 类(880 系,146 个)由 tdxzs.cfg(Ref=T码)×tdxhy.cfg(个股T码前缀匹配)合成,sw 类(881 系申万,467 个)由 tdxzs3.cfg(Ref=X码)×tdxhy.SwHy 合成
     - `GET /api/tdx-stat` / `GET /api/tdx-stat2` - 全市场盘后统计/资金流向+板块归属(8055 行, 含 35/21 槽位原始字段与 field_names 槽位说明)
     - `GET /api/tdx-hy?code=` - 个股行业归属(通达信 T 码 + 申万 X 码, 沪深 5663 只)
     - `POST /api/blocks/refresh` - 强制刷新盘后缓存(与 gbbq/refresh 同模式)

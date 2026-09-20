@@ -1825,6 +1825,15 @@ func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	if all || want["sw"] {
+		for _, b := range snap.sw {
+			items = append(items, &blockItem{
+				Name: b.Name, Index: b.Index, Type: b.Type,
+				TypeName: zhbBlockTypeName("sw"), Source: "sw",
+				CodeCount: len(b.Codes), Codes: b.Codes,
+			})
+		}
+	}
 	successResponse(w, map[string]any{
 		"count":      len(items),
 		"stat_date":  snap.statDate,
@@ -1984,6 +1993,7 @@ func handleRefreshZhb(w http.ResponseWriter, r *http.Request) {
 			"blocks_fg": len(snap.blocks["fg"]),
 			"blocks_zs": len(snap.blocks["zs"]),
 			"sp":        len(snap.sp),
+			"sw":        len(snap.sw),
 			"stat":      len(snap.stat),
 			"stat2":     len(snap.stat2),
 			"hy":        len(snap.hy),

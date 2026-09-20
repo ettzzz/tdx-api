@@ -38,8 +38,8 @@ var zhbBlockTypes = []struct {
 	{"zs", protocol.BlockFileZS, "指数板块"},
 }
 
-// zhbBlockTypeNames ?type= 合法值集合(含 sp, sp 来自 zhb.zip 的 spblock.dat)。
-var zhbBlockTypeNames = map[string]bool{"gn": true, "hy": true, "fg": true, "zs": true, "sp": true}
+// zhbBlockTypeNames ?type= 合法值集合(含 sp/spblock.dat 与 sw/申万合成板块)。
+var zhbBlockTypeNames = map[string]bool{"gn": true, "hy": true, "fg": true, "zs": true, "sp": true, "sw": true}
 
 // zhbSnapshot 一次刷新产出的不可变快照, 读端经 atomic.Pointer 无锁获取。
 type zhbSnapshot struct {
@@ -48,6 +48,7 @@ type zhbSnapshot struct {
 	files     map[string][]byte            // zhb.zip 解压条目原始字节(备未来扩展解析)
 	blocks    map[string][]*protocol.Block // 板块, key: gn/hy/fg/zs
 	sp        []*protocol.SpBlock          // 专业板块(中证2000/1000/500 等, 来自 zhb.zip)
+	sw        []*protocol.Block            // 申万行业板块(881 系, 由 tdxzs3.cfg × tdxhy.SwHy 合成)
 	stat      []*protocol.TdxStat          // 全市场盘后统计(tdxstat.cfg)
 	stat2     []*protocol.TdxStat2         // 全市场资金流向+板块归属(tdxstat2.cfg)
 	hy        []*protocol.TdxHy            // 全市场行业归属(tdxhy.cfg)
@@ -148,6 +149,15 @@ func zhbRefresh() (*zhbSnapshot, error) {
 			snap.blocks["hy"] = zhbSynthHyBlocks(zs, snap.hy)
 			delete(snap.errors, "hy")
 		}
+
+		// 6. 申万行业板块合成(881 系): tdxzs3.cfg 中代码 881xxx 且 Ref 为 X 码(申万行业, 层级
+		//    编码 X一级/X二级/X三级)的条目 × tdxhy.cfg 个股 SwHy 前缀匹配。
+		//    实测 467 板块(一级30/二级128/三级309), 成分命中 98.4%(未命中为个别空 SwHy)。
+		if zs3Data, ok := files[protocol.FileTdxZs3]; ok {
+			snap.sw = zhbSynthSwBlocks(protocol.ParseTdxZs(zs3Data), snap.hy)
+		} else {
+			snap.errors["sw"] = "zhb.zip 中缺少 " + protocol.FileTdxZs3
+		}
 		return nil
 	})
 	snap.fetchedAt = time.Now()
@@ -192,6 +202,46 @@ func zhbSynthHyBlocks(zs []*protocol.TdxZs, hy []*protocol.TdxHy) []*protocol.Bl
 		out = append(out, &protocol.Block{
 			Name:  p.z.Name,
 			Index: p.z.Code, // 880xxx, 直接来自 tdxzs.cfg
+			Type:  p.z.Type,
+			Codes: p.codes,
+		})
+	}
+	return out
+}
+
+// zhbSynthSwBlocks 合成申万行业板块(881 系): tdxzs3.cfg 中代码 881xxx 且 Ref 为 X 码的条目
+// 即申万板块(如 煤炭|881001|ref=X10), 个股 SwHy 以 Ref 为前缀(含相等)即为其成员——
+// X 码为层级编码, 三级行业(X100101)自动归入一级/二级行业(X10/X1001)。
+func zhbSynthSwBlocks(zs []*protocol.TdxZs, hy []*protocol.TdxHy) []*protocol.Block {
+	type plate struct {
+		z     *protocol.TdxZs
+		codes []string
+	}
+	plates := make([]*plate, 0, 500)
+	idx := map[string]*plate{} // ref(X码) → 板块
+	for _, z := range zs {
+		if len(z.Code) < 3 || z.Code[:3] != "881" || len(z.Ref) < 2 || z.Ref[0] != 'X' {
+			continue
+		}
+		p := &plate{z: z}
+		plates = append(plates, p)
+		idx[z.Ref] = p
+	}
+	for _, v := range hy {
+		if len(v.SwHy) < 2 {
+			continue
+		}
+		for ref, p := range idx {
+			if strings.HasPrefix(v.SwHy, ref) {
+				p.codes = append(p.codes, v.Code)
+			}
+		}
+	}
+	out := make([]*protocol.Block, 0, len(plates))
+	for _, p := range plates {
+		out = append(out, &protocol.Block{
+			Name:  p.z.Name,
+			Index: p.z.Code, // 881xxx, 直接来自 tdxzs3.cfg
 			Type:  p.z.Type,
 			Codes: p.codes,
 		})
@@ -300,8 +350,11 @@ func zhbStripMarketCode(code string) string {
 
 // zhbBlockTypeName 返回板块类型中文名(未知类型回退原始值)。
 func zhbBlockTypeName(key string) string {
-	if key == "sp" {
+	switch key {
+	case "sp":
 		return "专业板块"
+	case "sw":
+		return "申万行业"
 	}
 	for _, t := range zhbBlockTypes {
 		if t.key == key {

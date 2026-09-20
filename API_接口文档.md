@@ -1791,7 +1791,7 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 | 接口 | 说明 | 响应体积 |
 |---|---|---|
-| `GET /api/blocks?type=gn,hy,fg,zs,sp` | 行业/概念/风格地域/指数/专业板块全量及成分股（`codes` 统一 6 位） | ~1.2MB |
+| `GET /api/blocks?type=gn,hy,fg,zs,sp,sw` | 概念/通达信行业/风格地域/指数/专业/申万行业板块全量及成分股（`codes` 统一 6 位；`hy`=880 系通达信行业 146 个、`sw`=881 系申万行业 467 个，均为服务端合成） | ~2.0MB |
 | `GET /api/tdx-stat` | 全市场盘后统计：PETTM/静态PE/股息率/连涨连跌/5·10·20·60日涨幅/YTD + 35 槽位原始字段 | ~3.5MB |
 | `GET /api/tdx-stat2` | 全市场资金流向+板块归属：今昨成交额/IPO价/52周高低/所属板块 + 21 槽位原始字段 | ~2.6MB |
 | `GET /api/tdx-hy?code=` | 个股行业归属：通达信码(T前缀) + 申万码(X前缀)，沪深 5663 只 | <1MB |

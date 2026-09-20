@@ -63,15 +63,16 @@ curl "http://localhost:8080/api/kline-history-qfq?code=sz002222&type=day&start_d
 
 ### GET /api/blocks — 行业/概念/风格地域/指数/专业板块全量及成分股
 
-**参数**: `type`（可选，逗号分隔 `gn,hy,fg,zs,sp`，缺省全量）
+**参数**: `type`（可选，逗号分隔 `gn,hy,fg,zs,sp,sw`，缺省全量）
 
 | type | 含义 | 数量(2026-09-20) | index 字段 |
 |---|---|---|---|
 | `gn` | 概念板块（block_gn.dat） | 269 | 880xxx |
-| `hy` | 行业板块（服务端合成，见下注） | 146 | 880xxx |
+| `hy` | 通达信行业板块（服务端合成，见下注） | 146 | 880xxx |
 | `fg` | 风格地域板块（block_fg.dat） | 161 | 880xxx |
 | `zs` | 指数板块（block_zs.dat，沪深300 等） | 117 | 空（文件本身无指数码） |
 | `sp` | 专业板块（spblock.dat，中证500/1000/2000 等） | 35 | 空 |
+| `sw` | **申万行业板块**（881 系，tdxzs3.cfg × tdxhy.SwHy 合成，一级30/二级128/三级309） | 467 | 881xxx |
 
 > **hy 注**：`block_hy.dat` 当前各地域服务器均不再提供（2026-09-20 实测 6 台全部无数据）。
 > 行业板块由服务端合成：`tdxzs.cfg` 中 Ref 为 T 码的条目（板块名 + 880xxx 指数码）×
@@ -188,7 +189,7 @@ curl -X POST "http://localhost:8080/api/blocks/refresh"
   "data": {
     "duration_ms": 1778, "stat_date": "20260918", "fetched_at": "2026-09-20 12:02:27", "errors": {},
     "counts": {"blocks_gn": 269, "blocks_hy": 146, "blocks_fg": 161, "blocks_zs": 117,
-               "sp": 35, "stat": 8055, "stat2": 8055, "hy": 5663}
+               "sp": 35, "sw": 467, "stat": 8055, "stat2": 8055, "hy": 5663}
   }
 }
 ```

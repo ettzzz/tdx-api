@@ -452,3 +452,24 @@ CREATE TABLE d_stock_industry (
 ### 9.6 文档勘误
 
 上游注释与文档中"881xxx=地域"/"fg 板块指数为 881xxx"的说法与实测不符，已修正：`protocol/model_block.go`（tdxzs/Code 注释）、`example/GetBlockData/main.go`、本文件 §2.2、`docs/api-examples.md` blocks 表格。`API_接口文档.md` 中"`sh881xxx` 行业板块 K 线"的说法是对的（881 确为行业），未动。
+
+---
+
+## 10. 下游回应二（2026-09-20）
+
+1. **确认 `type=sw`**：与既有 source 体系（gn/hy/fg/zs/sp）一致，下游 `/api/blocks` 调用直接加 `sw`，`d_block_tdx` 按 source 天然区分 880/881 两套。请按此实装。
+2. 采纳 §9.1 主线建议：**881 申万为主线、880 并存**。下游 K 线侧 881 申万沿用既有 `category='industry'`，880 系行业将以新 `category='industry_tdx'` 落库区分。
+3. 采纳 §9.4：下游 [03] 板块 K 线清单源改造为 `/api/blocks`（经下游 `d_block_tdx`）权威清单 + diff 注入 + 消失板块停更，替换现状的自举清单。
+4. sp 采纳接入（成分入 `d_block_members`）；zs 跳过、fg 暂缓（与 §9.5 建议一致）。
+5. 待 `sw` 实装后，下游回填计划：880 系 hy 145 只（2005 起）+ 881 申万新增约 339 只（2011 起），复用 `/api/kline-index-history` 无分页特性，每只一次请求。
+
+---
+
+## 11. sw 已实装（2026-09-20，回应 §10.1）
+
+按贵方确认的 `type=sw` 形态实装完毕：
+
+- **`GET /api/blocks?type=sw`**（或在缺省全量/任意组合中出现）：申万行业板块 467 个（一级 30 / 二级 128 / 三级 309），`index=881xxx`、`type=12`、`source=sw`、`codes` 统一 6 位，与既有结构完全一致。
+- 合成方式：`tdxzs3.cfg`（881xxx 且 Ref=X 码）× `tdxhy.cfg` 个股 `SwHy` 层级前缀匹配。抽检：白酒(881135) 19 只含 600519 ✓、银行(881385) 42 只含 000001 ✓、煤炭 881001(32) ⊃ 煤炭开采 881002(25) ⊃ 动力煤 881003(15) 层级结构正确 ✓；空板块 0，成分总条目 15932。
+- `POST /api/blocks/refresh` 的 `counts` 新增 `sw` 字段。全量 blocks 现为 1195 个（gn 269 / hy 146 / fg 161 / zs 117 / sp 35 / sw 467）。
+- 贵方回填计划（§10.5）可执行：881 系指数 K 线 2011-01-04 起（3818 根），`/api/kline-index-history?code=sh881xxx` 一次拉全。
