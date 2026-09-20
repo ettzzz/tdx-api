@@ -69,7 +69,7 @@ curl "http://localhost:8080/api/kline-history-qfq?code=sz002222&type=day&start_d
 |---|---|---|---|
 | `gn` | 概念板块（block_gn.dat） | 269 | 880xxx |
 | `hy` | 行业板块（服务端合成，见下注） | 146 | 880xxx |
-| `fg` | 风格地域板块（block_fg.dat） | 161 | 881xxx |
+| `fg` | 风格地域板块（block_fg.dat） | 161 | 880xxx |
 | `zs` | 指数板块（block_zs.dat，沪深300 等） | 117 | 空（文件本身无指数码） |
 | `sp` | 专业板块（spblock.dat，中证500/1000/2000 等） | 35 | 空 |
 

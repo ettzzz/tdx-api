@@ -10,12 +10,12 @@ import (
 //
 // 板块数据来源:
 //   - block_gn.dat 概念板块      -> c.GetBlockDataWithIndex(BlockFileGN), 含指数代码(880xxx)
-//   - block_fg.dat 风格板块(含地域) -> c.GetBlockDataWithIndex(BlockFileFG), 含指数代码(881xxx)
+//   - block_fg.dat 风格板块(含地域) -> c.GetBlockDataWithIndex(BlockFileFG), 含指数代码(880xxx)
 //   - block_hy.dat 行业板块       -> c.GetBlockDataWithIndex(BlockFileHY), 含指数代码(880xxx)
 //   - block_zs.dat 指数板块(沪深300等) -> c.GetBlockData(BlockFileZS), 无指数代码
 //   - spblock.dat 专业板块(中证2000/1000/500等) -> c.GetSpBlock()
 //
-// 板块指数代码(880xxx/881xxx)归属上海交易所(ExchangeSH), 可用 GetIndexDay/GetQuote 直接获取行情。
+// 板块指数代码(880xxx/881xxx, 实测 fg 板块全为 880 系)归属上海交易所(ExchangeSH), 可用 GetIndexDay/GetQuote 直接获取行情。
 func main() {
 	c, err := tdx.DialDefault()
 	logs.PanicErr(err)
@@ -29,7 +29,7 @@ func main() {
 		logs.Infof("  板块=%s 指数=%s 成分数=%d 前5=%v", b.Name, b.Index, len(b.Codes), first(b.Codes, 5))
 	}
 
-	// 2. 风格板块(含地域, 指数代码 881xxx)
+	// 2. 风格板块(含地域, 指数代码 880xxx)
 	fg, err := c.GetBlockDataWithIndex(protocol.BlockFileFG)
 	logs.PanicErr(err)
 	logs.Infof("风格板块共 %d 个, 示例:", len(fg))

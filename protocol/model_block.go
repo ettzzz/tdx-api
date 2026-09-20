@@ -50,7 +50,7 @@ const (
 const (
 	ReportZHB = "zhb.zip" // 板块/配置数据总包(report file 下载后解压, 含下列文件)
 
-	FileTdxZs   = "tdxzs.cfg"   // 板块指数配置: 板块名↔指数代码(880xxx 行业/概念, 881xxx 地域)↔类型
+	FileTdxZs   = "tdxzs.cfg"   // 板块指数配置: 板块名↔指数代码↔类型(880 系: 行业T码146/概念/风格/地域; 881 系申万行业仅在 tdxzs3.cfg)
 	FileTdxZs3  = "tdxzs3.cfg"  // 板块指数配置(扩展, 同 tdxzs.cfg 格式)
 	FileTdxDsZs = "tdxdszs.cfg" // 港股板块指数配置: 板块名↔指数代码(HKxxxx)
 	FileTdxBk    = "tdxbk.cfg"    // 概念板块简称↔全称
@@ -62,7 +62,7 @@ const (
 // TdxZs 一个板块指数定义(来自 tdxzs.cfg / tdxzs3.cfg / tdxdszs.cfg)。
 type TdxZs struct {
 	Name    string // 板块名称
-	Code    string // 板块指数代码(id), 如 880xxx 行业/概念, 881xxx 地域, HKxxxx 港股
+	Code    string // 板块指数代码(id), 如 880xxx(行业/概念/风格/地域), 881xxx(申万行业, 仅 tdxzs3.cfg), HKxxxx 港股
 	Type    uint16 // 板块类型
 	SubType uint16 // 子类型
 	Ref     string // 成分标识(成分文件序号或名称)
