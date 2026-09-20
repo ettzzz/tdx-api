@@ -53,13 +53,15 @@ The library has no top-level `_test.go` files. The protocol package is the only 
 
 ### Live API smoke test
 
-`scripts/run_api_checks.py` hits ~30 endpoints against a locally running server. Requires `requests` and the server on `127.0.0.1:8080`:
+`scripts/run_api_checks.py` hits ~50 endpoints against a locally running server. Uses the repo-local venv `.venv/`（宿主机无系统级 pip，依赖装在 venv 里，`.gitignore` 已排除）and the server on `127.0.0.1:8080`:
 
 ```bash
-pip install requests
+# 首次: python3 -m venv .venv && .venv/bin/pip install requests
 go run .  # in web/
-python3 scripts/run_api_checks.py
+.venv/bin/python scripts/run_api_checks.py
 ```
+
+宿主机（Debian bullseye, python3.9）没有 `pip3`/`requests`，直接 `python3 scripts/run_api_checks.py` 会 ImportError——必须走 `.venv/bin/python`。
 
 ## Architecture
 
