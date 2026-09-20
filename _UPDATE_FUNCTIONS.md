@@ -390,3 +390,13 @@ CREATE TABLE d_stock_industry (
 ### 7.4 主机测速结论（顺带）
 
 2026-09-20 全量 TCP 实测 41/41 台主行情服务器可用：**北京腾讯云 8-13ms 最优**（本机视角），武汉 24.7ms、上海 29-34ms、广州 41-50ms。已按此调整 hosts 表默认顺序，并在 web 启动时启用 SortHosts 动态测速。ExHq 16/16 台 TCP 全通（协议层可用性未验证，待未来接入时按贵方要求先做探活端点）。
+
+---
+
+## 8. 开发进展（2026-09-20 收工状态）
+
+- **v2.1.0 已开发完成并部署生产 8080**（commit `25fb82f`，tag `v2.1.0`，容器 healthy；回滚 `VERSION=v2.0.0 docker compose up -d`）。
+- §7 所述五个端点全部上线，生产环境双轮验证通过（本地 8081 + 生产 8080，11/11 端点回归）；数据抽检一致（000001 pettm=5.22 / block_index=880845，600519 hy=T030501，沪深300=300 只，中证500=500 只）。
+- 实现落点：`web/server_zhb.go`（缓存与刷新编排）+ `web/server_api_extended.go`（5 个 handler）；字段核验状态已写入 `API_接口文档.md` "盘后数据接口"节，使用示例在 `docs/api-examples.md`。
+- **待协商**：`gld`（关联度）字段缺失的处理方式，待与下游确定后补充到 §7.1（候选：d_plate_members.gld 置 0 / 废弃该列）。
+- 小尾巴：`scripts/run_api_checks.py` 已加 7 个新端点用例，但宿主机缺 `requests`（无 pip），本次用标准库脚本验证；下次跑全量脚本前需 `apt install python3-requests` 或改造脚本为标准库实现。
