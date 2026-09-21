@@ -6,6 +6,9 @@ package main
 //
 // 刷新语义(盘后数据每交易日一份): 缓存数据日期 statDate(取 tdxstat.cfg 行内 Date 最大值)
 // 不等于「最近一个已收盘交易日」时判定过期, 下一次 GET 自动重新下载, mutex 双检查防并发击穿。
+// 退避: 上游盘后包实际发布时间晚于 16:00 就绪线(实测 19-21 点), 窗口期内刷新只能拿到上一
+// 交易日数据; 为避免每请求都全量下载, 刷新后仍不满足期望日期(或刷新失败)时按 5m→10m→20m
+// 封顶递增冷却, 窗口内 GET 直接复用旧快照; POST /api/blocks/refresh 不受读路径冷却限制。
 // 全量刷新 = zhb.zip(实测约2s, 4.4MB) + 4 个板块文件 + tdxhy.cfg(实测约0.25s),
 // 单连接顺序执行总计约 6-8s, 客户端超时建议 ≥30s。
 // 宽松模式: 单个数据源失败不阻断整体, 失败原因记录在 snapshot.errors 随响应透出,
@@ -60,12 +63,15 @@ var (
 	zhbMu         sync.Mutex                  // 刷新互斥(防并发击穿)
 	zhbFieldStat  = tdxStatFieldNames()       // tdxstat.cfg 35 槽位说明(见下)
 	zhbFieldStat2 = tdxStat2FieldNames()      // tdxstat2.cfg 21 槽位说明
+	zhbMissStreak atomic.Int32                // 连续「刷新后仍拿不到期望日期」次数(成功命中即清零)
+	zhbCooldownUntil atomic.Int64             // 退避截止时刻 unix 秒(0=无退避)
 )
 
 // zhbGet 获取缓存快照; 过期(force=false)或强制(force=true)时同步刷新。
+// 退避窗口内(force=false)直接复用旧快照, 不重复全量下载。
 func zhbGet(force bool) (*zhbSnapshot, error) {
 	if !force {
-		if snap := zhbPtr.Load(); snap != nil && snap.statDate == zhbExpectedDate() {
+		if snap := zhbPtr.Load(); snap != nil && zhbUsable(snap) {
 			return snap, nil
 		}
 	}
@@ -73,20 +79,50 @@ func zhbGet(force bool) (*zhbSnapshot, error) {
 	defer zhbMu.Unlock()
 	// 双检查: 等锁期间可能已被并发请求刷新
 	if !force {
-		if snap := zhbPtr.Load(); snap != nil && snap.statDate == zhbExpectedDate() {
+		if snap := zhbPtr.Load(); snap != nil && zhbUsable(snap) {
 			return snap, nil
 		}
 	}
 	snap, err := zhbRefresh()
 	if err != nil {
-		// 全量失败(如 zhb.zip 下载失败): 保留旧快照继续服务
+		// 全量失败(如 zhb.zip 下载失败): 保留旧快照继续服务, 同样进入退避
+		zhbBackoff()
 		if old := zhbPtr.Load(); old != nil {
 			return old, fmt.Errorf("刷新失败, 返回旧缓存(%s): %w", old.statDate, err)
 		}
 		return nil, err
 	}
 	zhbPtr.Store(snap)
+	if snap.statDate == zhbExpectedDate() {
+		zhbMissStreak.Store(0)
+		zhbCooldownUntil.Store(0)
+	} else {
+		zhbBackoff() // 上游尚未发布当日数据, 退避等下一个探测点
+	}
 	return snap, nil
+}
+
+// zhbUsable 快照是否可直接服务: 日期已达标, 或处于退避窗口内(旧数据好过无数据,
+// 且窗口内再刷也只是重复劳动)。
+func zhbUsable(snap *zhbSnapshot) bool {
+	return snap.statDate == zhbExpectedDate() || time.Now().Unix() < zhbCooldownUntil.Load()
+}
+
+// zhbBackoff 记一次未命中并设置递增冷却: 连续第 n 次 5m→10m→20m 封顶。
+// 上游发布当日包后, 下一个探测点(最多一个冷却周期)即恢复到毫秒级缓存命中。
+func zhbBackoff() {
+	n := zhbMissStreak.Add(1)
+	cooldown := 5 * time.Minute
+	switch {
+	case n >= 3:
+		cooldown = 20 * time.Minute
+	case n == 2:
+		cooldown = 10 * time.Minute
+	}
+	until := time.Now().Add(cooldown)
+	zhbCooldownUntil.Store(until.Unix())
+	log.Printf("[zhb] 暂未获取到期望日期(%s), 连续第 %d 次, 退避至 %s (%v)",
+		zhbExpectedDate(), n, until.Format("15:04:05"), cooldown)
 }
 
 // zhbRefresh 执行一次全量下载+解析, 产出新快照(调用方持有 zhbMu)。

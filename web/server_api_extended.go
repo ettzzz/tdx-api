@@ -1989,7 +1989,10 @@ func handleRefreshZhb(w http.ResponseWriter, r *http.Request) {
 		"duration_ms": time.Since(start).Milliseconds(),
 		"stat_date":   snap.statDate,
 		"fetched_at":  snap.fetchedAt.Format(time.DateTime),
-		"errors":      snap.errors,
+		// 退避截止 unix 秒, 0=无退避(已拿到期望日期)。非 0 说明上游尚未发布当日盘后包,
+		// stat_date 为上一交易日属正常, 窗口内 GET 直接复用本快照不再重复下载。
+		"cooldown_until": zhbCooldownUntil.Load(),
+		"errors":         snap.errors,
 		"counts": map[string]int{
 			"blocks_gn": len(snap.blocks["gn"]),
 			"blocks_hy": len(snap.blocks["hy"]),
