@@ -99,9 +99,15 @@ func SortExHosts(timeout ...time.Duration) []string {
 	}
 
 	<-time.After(_timeout)
-	<-chMustOne.Done()
+	// 全部不可达时的兜底: 最多再等一个 timeout, 防止永久阻塞(同 SortHosts)
+	select {
+	case <-chMustOne.Done():
+	case <-time.After(_timeout):
+	}
 
-	ExHosts = ls
+	if len(ls) > 0 { //空结果不回写, 防止网络抖动清空可用列表(同 SortHosts)
+		ExHosts = ls
+	}
 
 	return ls
 }

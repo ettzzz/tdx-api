@@ -51,9 +51,17 @@ func WithRedial(b ...bool) client.Option {
 }
 
 // DialDefault 默认连接方式
+// 走并发竞速拨号(NewRaceDial): 全部主机同时拨号取最先成功, 单台拒连不再拖 2s 串行间隔;
+// hosts 传 nil, 每次(重)拨动态读取包级 Hosts, web 层启动测速/周期重测回写实时生效。
 func DialDefault(op ...client.Option) (cli *Client, err error) {
 	op = append([]client.Option{WithRedial()}, op...)
-	return DialHostsRange(Hosts, op...)
+	return DialHostsRace(nil, op...)
+}
+
+// DialHostsRace 并发竞速拨号建立连接, 见 NewRaceDial。
+// hosts 为空表示每次拨号动态读取包级 Hosts(推荐)。
+func DialHostsRace(hosts []string, op ...client.Option) (cli *Client, err error) {
+	return DialWith(NewRaceDial(hosts), op...)
 }
 
 // Dial 与服务器建立连接
@@ -90,7 +98,7 @@ func DialWith(dial ios.DialFunc, op ...client.Option) (cli *Client, err error) {
 		c.Logger.WithHEX()                             //以HEX显示
 		c.SetOption(op...)                             //自定义选项
 		c.Event.OnReadFrom = protocol.ReadFrom         //分包
-		c.Event.OnDealMessage = cli.handlerDealMessage //解析数据并处理
+		c.Event.OnDealMessage = cli.onDealMessage      //解析数据并处理(包装层同时维护假死看门狗的下行时间戳)
 		c.Event.OnConnected = func(c *client.Client) error {
 			//无数据超时时间是60秒,30秒发送一个心跳包
 			c.GoTimerWriter(30*time.Second, func(w ios.MoreWriter) error {
@@ -98,6 +106,8 @@ func DialWith(dial ios.DialFunc, op ...client.Option) (cli *Client, err error) {
 				_, err := w.Write(bs)
 				return err
 			})
+			//下行时间戳从连接成功时刻起算, 避免看门狗把"从未收到下行"误判为无限静默
+			cli.lastReadAt.Store(time.Now().UnixNano())
 			f := protocol.MConnect.Frame()
 			if _, err = c.Write(f.Bytes()); err != nil {
 				c.Close()
@@ -111,6 +121,8 @@ func DialWith(dial ios.DialFunc, op ...client.Option) (cli *Client, err error) {
 
 	go cli.Client.Run()
 
+	cli.startZombieWatchdog()
+
 	return cli, err
 }
 
@@ -119,6 +131,68 @@ type Client struct {
 	Wait           *wait.Entity //异步回调,设置超时时间,超时则返回错误
 	m              *maps.Safe   //有部分解析需要用到代码,返回数据获取不到,固请求的时候缓存下
 	msgID          uint32       //消息id,使用SendFrame自动累加
+
+	// ---- 连接假死看门狗状态(见 startZombieWatchdog), unix 纳秒, 0 表示尚未发生 ----
+	// lastReadAt 最后一次收到服务器下行(含心跳/业务响应)的时刻, OnConnected 时重置
+	lastReadAt atomic.Int64
+	// lastTimeoutAt 最后一次请求等待超时的时刻; 看门狗仅在近期出现过超时才会主动断开,
+	// 避免误伤"服务器不回心跳、仅业务来才回包"的夜间纯空闲连接
+	lastTimeoutAt atomic.Int64
+}
+
+// 假死看门狗参数。背景: 2026-10-13 下游复盘, TCP 半开/假死时既无断开事件也无重拨日志,
+// 请求只会持续"超时"(14:47~14:53 连续 P0, 15:05 才自愈), 是当时排查最大盲点。
+const (
+	// zombieReadStale 读静默阈值: 正常心跳 30s 一轮(有来有回), 4 个周期无任何下行视为静默
+	zombieReadStale = time.Second * 120
+	// zombieTimeoutValid 超时记忆期: 最近该时长内出现过请求等待超时, 才认定"有请求在等且没等到"
+	zombieTimeoutValid = time.Minute * 5
+	// zombieCheckEvery 看门狗巡检周期, 决定假死发现延迟的上界
+	zombieCheckEvery = time.Second * 30
+)
+
+// startZombieWatchdog 连接假死看门狗。
+// TCP 半开(对端静默丢弃/NAT 超时)时, 心跳写入可能长期"成功"而不触发断开重连,
+// 库内 SetReadTimeout 在 ios v1.2.6 有缺陷(定时器不随读数据重置, 等于无条件定期断连)不可用,
+// 故自行以 下行时间戳+请求超时记录 实现。触发条件(同时满足才断开):
+//  1. 超过 zombieReadStale 无任何服务器下行;
+//  2. 最近 zombieTimeoutValid 内出现过请求等待超时。
+//
+// 断开后进入库内既有重拨流程(DialDefault 已是并发竞速拨号, 窗口 ~2s)。
+// 假死恢复从"无日志、未知时长"变为"最多 巡检周期+竞速拨号窗口 (~35s)"。
+func (this *Client) startZombieWatchdog() {
+	go func() {
+		t := time.NewTicker(zombieCheckEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-this.Client.Done(): //客户端生命周期结束(含 CloseAll)
+				return
+			case <-t.C:
+				now := time.Now()
+				lastRead := time.Unix(0, this.lastReadAt.Load())
+				if now.Sub(lastRead) <= zombieReadStale {
+					continue
+				}
+				lt := this.lastTimeoutAt.Load()
+				if lt == 0 || now.Sub(time.Unix(0, lt)) > zombieTimeoutValid {
+					continue
+				}
+				//一次性触发: 断开后需新的请求超时事件重新武装, 防止重拨失败期间每周期刷日志
+				this.lastTimeoutAt.Store(0)
+				logs.Warnf("[看门狗] 连接假死: 已 %s 无服务器下行且近期有请求超时, 主动断开触发重拨",
+					now.Sub(lastRead).Round(time.Second))
+				this.CloseWithErr(errors.New("连接假死: 读超时, 主动断开重连"))
+			}
+		}
+	}()
+}
+
+// onDealMessage 假死看门狗的下行探针 + 消息处理入口。
+// 所有服务器下行(心跳/业务响应)都会经过这里, 用于刷新 lastReadAt。
+func (this *Client) onDealMessage(c *client.Client, msg ios.Acker) {
+	this.lastReadAt.Store(time.Now().UnixNano())
+	this.handlerDealMessage(c, msg)
 }
 
 // handlerDealMessage 处理服务器响应的数据
@@ -257,7 +331,12 @@ func (this *Client) SendFrame(f *protocol.Frame, cache ...any) (any, error) {
 	if _, err := this.Client.Write(f.Bytes()); err != nil {
 		return nil, err
 	}
-	return this.Wait.Wait(conv.String(f.MsgID))
+	result, err := this.Wait.Wait(conv.String(f.MsgID))
+	if err != nil {
+		//请求等待超时(响应缺失): 给假死看门狗留证据 —— 有请求在等但没等到下行
+		this.lastTimeoutAt.Store(time.Now().UnixNano())
+	}
+	return result, err
 }
 
 // GetCount 获取市场内的股票数量

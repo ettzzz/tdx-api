@@ -28,8 +28,8 @@ var (
 func init() {
 	var err error
 	// 启动测速: 对全部服务器 TCP 拨号排序并写回包级 Hosts,
-	// 后续 DialDefault(range-dial 顺序遍历) 优先命中最快主机。
-	// 加超时守卫: SortHosts 在全部主机不可达时会阻塞在"至少一个成功"的等待上, 不能让它挂死启动。
+	// 后续 DialDefault(竞速拨号 NewRaceDial) 每次动态读取最新 Hosts 列表。
+	// SortHosts 现已自带"至少一台成功"兜底(全部不可达时最多 2×timeout 返回), 此处 5s 守卫仅作纵深防御。
 	type sortResult = []string // SortHosts 结果, 经 channel 传递以便加超时守卫
 	chSort := make(chan sortResult, 1)
 	go func() { chSort <- tdx.SortHosts(2 * time.Second) }()
@@ -44,7 +44,20 @@ func init() {
 		log.Println("主机测速超时(5s), 使用默认主机顺序")
 	}
 
-	// 连接通达信服务器
+	// 周期重测: 上午最快的主机下午可能已死(TDX 服务器 IP 变动是常态),
+	// 每 10 分钟后台重测回写 Hosts; 空结果不回写(hosts.go), 网络抖动不会清空可用列表。
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		for range ticker.C {
+			if hosts := tdx.SortHosts(2 * time.Second); len(hosts) > 0 {
+				log.Printf("主机周期重测完成: 可用 %d 台, 最快: %s", len(hosts), hosts[0])
+			} else {
+				log.Printf("主机周期重测: 无可用主机, 保留原列表")
+			}
+		}
+	}()
+
+	// 连接通达信服务器(竞速拨号: 全部主机并发拨号取最先成功, 重拨窗口 ~2s)
 	client, err = tdx.DialDefault(tdx.WithDebug(false))
 	if err != nil {
 		log.Fatalf("连接服务器失败: %v", err)

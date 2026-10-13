@@ -17,6 +17,7 @@ var (
 	// 拼接顺序按 2026-09-20 全量 TCP 拨号实测(orange pi 开发机): 北京 8-13ms 全部最快,
 	// 武汉 24.7ms, 上海 29-34ms, 广州 41-50ms, 故 北京→武汉→上海→广州;
 	// web 层启动时另有 SortHosts 动态测速兜底(hosts.go SortHosts), 静态顺序仅为非 web 使用方与测速失败时的回退。
+	// web 层另有 10 分钟周期重测回写(web/server.go init), NewRaceDial 每次拨号动态读取本列表。
 	Hosts = func() []string {
 		lenBJ := len(BJHosts)
 		lenWH := len(WHHosts)
@@ -90,7 +91,20 @@ var (
 	}
 )
 
+// hostsMu 保护 Hosts 的写回与快照读取(SortHosts 后台周期重测 与 NewRaceDial 动态读取并发)。
+// 包级变量 Hosts 仍可直接读(兼容既有外部使用方), 只是读到的可能是新旧切片之一, 切片本身不可变。
+var hostsMu sync.Mutex
+
+// hostSnapshot 原子化地取当前 Hosts 列表快照
+func hostSnapshot() []string {
+	hostsMu.Lock()
+	defer hostsMu.Unlock()
+	return Hosts
+}
+
 // SortHosts 通过tcp(ping不可用)连接速度的方式筛选排序可用的地址
+// 全部主机不可达时最多等待 2×timeout 后返回空列表, 不会永久阻塞;
+// 空结果不回写 Hosts(保留上一次可用列表, 防止网络抖动清空主机列表)。
 func SortHosts(timeout ...time.Duration) []string {
 
 	//超时时间
@@ -125,9 +139,17 @@ func SortHosts(timeout ...time.Duration) []string {
 	}
 
 	<-time.After(_timeout)
-	<-chMustOne.Done()
+	// 全部不可达时的兜底: 最多再等一个 timeout, 防止永久阻塞(2026-10-13 下游故障复盘)
+	select {
+	case <-chMustOne.Done():
+	case <-time.After(_timeout):
+	}
 
-	Hosts = ls
+	hostsMu.Lock()
+	if len(ls) > 0 {
+		Hosts = ls
+	}
+	hostsMu.Unlock()
 
 	return ls
 }

@@ -92,13 +92,13 @@ extend/                   ← higher-level utilities built on tdx
   ├─ model_history_*.go   date-scoped minute/trade pulls
   └─ types_price.go       Price is int64 in 厘 (1/100 yuan); Float64() helper
 
-(/) client.go             ← Client (high-level), DialDefault, heartbeat + connect
-(/) dial.go               ← 4 dial strategies: TCP / Host round-robin / Random / Range
+(/) client.go             ← Client (high-level), DialDefault, heartbeat + connect + 假死看门狗
+(/) dial.go               ← 5 dial strategies: TCP / Host round-robin / Random / Range(串行) / Race(并发竞速)
 (/) pool.go               ← bounded channel pool; Do() / Go() helpers
 (/) codes.go              ← Codes backed by xorm (SQLite or MySQL) — code cache
 (/) workday.go            ← Workday backed by xorm — trading-day calendar
 (/) manage.go             ← Manage: pool + Codes + Workday + cron
-(/) hosts.go              ← TDX server IPs (SH/BJ/GZ/WH) + FastHosts TCP ping
+(/) hosts.go              ← TDX server IPs (SH/BJ/GZ/WH) + SortHosts 并发测速(有界等待, 空结果不回写)
 (/) client_bj_code.go     BJ-specific code list
 ```
 
@@ -115,6 +115,14 @@ extend/                   ← higher-level utilities built on tdx
 `Pool` (pool.go) is a fixed-size channel of `*Client`. `Manage` (manage.go) wraps it and adds `Codes`, `Workday`, and a `robfig/cron` scheduler. Use `Manage.Pool.Do(fn)` for one-off and `Pool.Go(fn)` for fire-and-forget.
 
 `FastHosts` (hosts.go) TCP-pings all server IPs in parallel and sorts by latency — used to pick the best server on startup.
+
+### 连接健壮性 (2026-10-13, 下游 trader_harness 故障复盘落地)
+
+- **`DialDefault` 走并发竞速拨号 `NewRaceDial`** (dial.go): 全部主机同时 `net.DialTimeout(2s)` 取最先成功, 其余连接立即关闭。单台拒连不再像 `NewRangeDial`(串行, 每台拒连 sleep 2s, 最坏 ~20s+, 仍保留给 extend/httpserver) 那样拖慢重拨, 最坏窗口 ≈ 2s。日志带 `[重拨]` 前缀: 开始台数/每台拒绝/成功(地址+耗时)/全部失败。
+- **`NewRaceDial(nil)` 每次拨号动态读取包级 `Hosts`** (经 `hostSnapshot`/`hostsMu`), 而 `DialHostsRange` 是调用时一次性快照 —— 想让重测结果对重拨生效必须走 Race 入口。
+- **主机列表维护**: web 层启动 `SortHosts(2s)` 测速 + **每 10 分钟后台重测回写** (web/server.go init)。`SortHosts`/`SortExHosts` 已加固: "至少一台成功"等待最多再等一个 timeout(全部不可达时返回空而非挂死); **空结果不回写** Hosts(防网络抖动清空列表)。
+- **连接假死看门狗** (client.go `startZombieWatchdog`, 每个客户端常驻): TCP 半开时既无断开事件也无重拨日志、请求持续"超时"(2026-10-13 14:47~14:53 下游三连 P0 即此形态)。触发条件(同时满足才主动断开重拨): ①超 120s 无任何服务器下行(`onDealMessage` 探针, 心跳 30s/轮); ②最近 5 分钟内有请求等待超时(`SendFrame` 打点) —— 双条件避免误伤夜间纯空闲连接。发现延迟上界 ≈ 30s 巡检 + 2s 竞速拨号。**勿用 ios 库的 `SetReadTimeout`**: v1.2.6 实现缺陷, 定时器不随读数据重置, 等于无条件定期断连。
+- **错误文案是跨仓契约**: `/api/quote` 等返回 `message` 含 **"超时"** 时, 下游 harness 判为瞬态并重试(2s/5s 退避) —— 不要改 `获取行情失败: %v` 的格式或 wait 库的 "超时" 文案。下游同时明确**不要**失败回退缓存旧价(close-based 纪律链宁可失败不吃陈旧数据)。
 
 ### `Codes` / `Workday` databases
 
@@ -208,3 +216,5 @@ Multi-stage build with 国内镜像 sources (Alpine + Go proxy both pointed at A
 - **Single client per connection.** Don't spawn many goroutines hammering one `*Client`; use the `Pool` (via `Manage`) instead. Concurrent calls on one client serialize behind a 2s gate.
 - **`gbbq` 改为按需拉取(PLAN_v2 §3)** — `NewGbbq` 不再启动 cron 也不再调用 `Update()`,空缓存冷启动是秒级。需要数据时调 `POST /api/gbbq/refresh`(单只秒级,全量约 9-15 分钟)。`/api/turnover` 在 gbbq 缓存空时返回 turnover=0,**不会**自动补拉;查询路径与更新路径已解耦。
 - **`/api/market-snapshot` 是耗时长端点(PLAN_v2 §4)** — 单线程串行拉全市场 5300+ 只,**同步阻塞 4-15 分钟**。HTTP 客户端必须设大超时(`curl -m 900`)。响应体积 ≈ 1MB(5300+ × 200B)。失败模式宽松(单只失败不阻断)。建议调用时序:每个交易日 16:00 之后(避开 15:00 收盘数据回填期)。`run_api_checks.py` 把这个端点标为 `slow=True`,默认不跑,需加 `--slow` 启用。
+
+---
