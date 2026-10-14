@@ -24,7 +24,7 @@ func (historyTrade) Frame(date, code string, start, count uint16) (*Frame, error
 	}
 	dataBs := Bytes(conv.Uint32(date)) //req.Time.Format("20060102"))
 	dataBs = append(dataBs, exchange.Uint8(), 0x0)
-	dataBs = append(dataBs, []byte(number)...)
+	dataBs = append(dataBs, []byte(PadCode6(number))...)
 	dataBs = append(dataBs, Bytes(start)...)
 	dataBs = append(dataBs, Bytes(count)...)
 	return &Frame{

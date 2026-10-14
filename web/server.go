@@ -139,6 +139,8 @@ func errorResponse(w http.ResponseWriter, message string) {
 }
 
 // 获取五档行情
+// 市场分流 (2026-10-14 港股行情移交单): 港股代码走扩展行情独立连接(server_hk.go),
+// 其余走标准行情主连接; 任何失败都写服务端日志(此前失败完全不可观测)。
 func handleGetQuote(w http.ResponseWriter, r *http.Request) {
 	codeParam := r.URL.Query().Get("code")
 	if codeParam == "" {
@@ -152,13 +154,59 @@ func handleGetQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	quotes, err := client.GetQuote(codes...)
+	quotes, err := getQuotesMixed(codes)
 	if err != nil {
+		log.Printf("[quote] 获取行情失败 codes=%v: %v", codes, err)
 		errorResponse(w, fmt.Sprintf("获取行情失败: %v", err))
 		return
 	}
 
 	successResponse(w, quotes)
+}
+
+// getQuotesMixed 按市场分流取报价, 结果保持入参顺序。
+// 港股走扩展行情(独立连接, 逐只串行), 其余代码走标准行情主连接(单帧批量)。
+func getQuotesMixed(codes []string) (protocol.QuotesResp, error) {
+	var stdCodes, hkCodes []string
+	idx := make([]int, 0, len(codes)) // 港股代码在入参中的位置
+	for i, code := range codes {
+		ex, _, err := protocol.DecodeCode(code)
+		if err != nil {
+			return nil, err
+		}
+		if ex == protocol.ExchangeHK {
+			hkCodes = append(hkCodes, code)
+			idx = append(idx, i)
+		} else {
+			stdCodes = append(stdCodes, code)
+		}
+	}
+
+	var stdQuotes, hkQuotesList protocol.QuotesResp
+	var err error
+	if len(stdCodes) > 0 {
+		if stdQuotes, err = client.GetQuote(stdCodes...); err != nil {
+			return nil, err
+		}
+	}
+	if len(hkCodes) > 0 {
+		if hkQuotesList, err = hkQuotes(hkCodes); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make(protocol.QuotesResp, 0, len(codes))
+	hkIdx := 0
+	for i := range codes {
+		if len(idx) > 0 && hkIdx < len(idx) && idx[hkIdx] == i {
+			out = append(out, hkQuotesList[hkIdx])
+			hkIdx++
+		} else {
+			out = append(out, stdQuotes[0])
+			stdQuotes = stdQuotes[1:]
+		}
+	}
+	return out, nil
 }
 
 // 获取K线数据（日K线默认使用前复权）

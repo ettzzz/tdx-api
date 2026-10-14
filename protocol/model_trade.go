@@ -77,7 +77,7 @@ func (trade) Frame(code string, start, count uint16) (*Frame, error) {
 		return nil, err
 	}
 
-	codeBs := []byte(number)
+	codeBs := []byte(PadCode6(number))
 	codeBs = append(codeBs, Bytes(start)...)
 	codeBs = append(codeBs, Bytes(count)...)
 	return &Frame{

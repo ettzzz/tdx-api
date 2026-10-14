@@ -450,18 +450,20 @@ func (this *Client) GetIndexCodeAll() ([]string, error) {
 }
 
 // GetQuote 获取盘口五档报价
+// 仅支持沪深京市场; 港股/美股等市场会返回明确错误(不含"超时", 调用方不应重试)。
+// 原因: 标准行情服务器不提供这些市场, 请求即使帧格式正确也会被服务端
+// 静默映射成深市错票数据(2026-10-14 实测, 见 tools/hkprobe), 必须显式拒绝。
 func (this *Client) GetQuote(codes ...string) (protocol.QuotesResp, error) {
 	for i := range codes {
+		ex, _, err := protocol.DecodeCode(codes[i])
+		if err != nil {
+			return nil, err
+		}
+		if ex != protocol.ExchangeSH && ex != protocol.ExchangeSZ && ex != protocol.ExchangeBJ {
+			return nil, fmt.Errorf("市场[%s]不被标准行情支持: %s (仅沪深京, 港股请走扩展行情接口)", ex.Name(), codes[i])
+		}
 		//如果是股票代码,则加上前缀
 		codes[i] = protocol.AddPrefix(codes[i])
-		if !protocol.IsStock(codes[i]) && !protocol.IsIndex(codes[i]) {
-			if DefaultCodes == nil {
-				return nil, errors.New("DefaultCodes未初始化")
-			}
-			//不是股票/指数代码的话，根据codes的信息加上前缀
-			//codes[i] = DefaultCodes.AddExchange(codes[i])
-			codes[i] = protocol.AddPrefix(codes[i])
-		}
 	}
 
 	f, err := protocol.MQuote.Frame(codes...)

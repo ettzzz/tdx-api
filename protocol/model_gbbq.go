@@ -41,7 +41,7 @@ func (gbbq) Frame(code string) (*Frame, error) {
 
 	data := []byte{0x01, 0x00}
 	data = append(data, exchange.Uint8())
-	data = append(data, number...)
+	data = append(data, PadCode6(number)...)
 	return &Frame{
 		Control: Control01,
 		Type:    TypeGbbq,

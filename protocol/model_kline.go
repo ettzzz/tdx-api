@@ -125,7 +125,7 @@ func (kline) Frame(Type uint8, code string, start, count uint16) (*Frame, error)
 	}
 
 	data := []byte{exchange.Uint8(), 0x0}
-	data = append(data, []byte(number)...) //这里怎么是正序了？
+	data = append(data, []byte(PadCode6(number))...) //这里怎么是正序了？
 	data = append(data, Type, 0x0)
 	data = append(data, 0x01, 0x0)
 	data = append(data, Bytes(start)...)

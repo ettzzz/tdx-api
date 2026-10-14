@@ -72,7 +72,7 @@ func (this quote) Frame(codes ...string) (*Frame, error) {
 		}
 
 		payload = append(payload, exchange.Uint8())
-		payload = append(payload, code...)
+		payload = append(payload, PadCode6(code)...)
 	}
 	f.Data = append(f.Data, payload...)
 

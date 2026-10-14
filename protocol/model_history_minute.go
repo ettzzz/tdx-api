@@ -15,7 +15,7 @@ func (this historyMinute) Frame(date, code string) (*Frame, error) {
 	}
 	dataBs := Bytes(conv.Uint32(date))
 	dataBs = append(dataBs, exchange.Uint8())
-	dataBs = append(dataBs, []byte(number)...)
+	dataBs = append(dataBs, []byte(PadCode6(number))...)
 	return &Frame{
 		Control: Control01,
 		Type:    TypeHistoryMinute,

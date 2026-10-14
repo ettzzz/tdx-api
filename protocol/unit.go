@@ -198,6 +198,18 @@ func isDigits(s string) bool {
 	return true
 }
 
+// PadCode6 把代码主体补齐为协议要求的 6 字节定长域(右侧 \x00 填充)。
+// TDX 服务端按"市场字节+6字节代码"的固定结构逐字节解析请求,
+// 不足 6 字节的代码(港股 5 位/美股字母/期货合约)若原样嵌入, 帧整体比服务端预期短,
+// 服务端会阻塞等待甚至吃掉紧随其后的下一帧首字节, 导致该连接后续请求连锁超时
+// (2026-10-14 港股行情污染事故根因, 见 tools/hkprobe)。超长代码原样返回(防御)。
+func PadCode6(code string) string {
+	if len(code) >= 6 {
+		return code
+	}
+	return code + string(make([]byte, 6-len(code)))
+}
+
 // isStockSymbol 是否美股代码(1~5位字母,可含 . / - 等特殊字符,如 BRK.B)
 func isStockSymbol(s string) bool {
 	if s == "" || len(s) > 5 {

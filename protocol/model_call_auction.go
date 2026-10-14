@@ -17,7 +17,7 @@ func (callAuction) Frame(code string) (*Frame, error) {
 		return nil, err
 	}
 
-	codeBs := []byte(number)
+	codeBs := []byte(PadCode6(number))
 	codeBs = append(codeBs, []byte{
 		0x00, 0x00, 0x00, 0x00,
 		0x03, 0x00, 0x00, 0x00,

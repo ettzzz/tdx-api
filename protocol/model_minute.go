@@ -28,7 +28,7 @@ func (this *minute) Frame(code string) (*Frame, error) {
 	if err != nil {
 		return nil, err
 	}
-	codeBs := []byte(number)
+	codeBs := []byte(PadCode6(number))
 	codeBs = append(codeBs, 0x0, 0x0, 0x0, 0x0)
 	return &Frame{
 		Control: Control01,
