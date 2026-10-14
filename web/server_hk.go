@@ -14,6 +14,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -146,4 +148,116 @@ func exQuoteToQuote(code string, q *protocol.ExQuote) *protocol.Quote {
 		}
 	}
 	return out
+}
+
+// ---- 港股日K ----
+//
+// 港股没有 gbbq 数据(2026-10-14 实证: 标准协议 gbbq 对 hk00700 返回 count=0,
+// gbbq 即 A 股除权除息机制), 故港股无前复权能力; 日线统一走 ExHq ExBars
+// (category 9=日K, 不复权原始价)。/api/kline-history{,-ths,-qfq,-tdx} 对港股
+// 统一分流到这里, 语义一致(不复权), 也堵住了短帧修复前"错票数据"的通道。
+
+// isHKCode 是否港股代码(裸 5 位纯数字 / hk 前缀 / .HK 后缀)。
+func isHKCode(code string) bool {
+	ex, _, err := protocol.DecodeCode(code)
+	return err == nil && ex == protocol.ExchangeHK
+}
+
+// hkKlineDayAll 港股日K全量(升序), ExHq 源, 不复权。
+// ExBars 单次上限 800 根, start 递增向历史回溯; 分页边界可能重叠, 按日期去重。
+func hkKlineDayAll(code string) ([]*protocol.Kline, error) {
+	_, body, err := protocol.DecodeCode(code)
+	if err != nil {
+		return nil, err
+	}
+
+	hkMu.Lock()
+	defer hkMu.Unlock()
+
+	cli, err := getHKClient()
+	if err != nil {
+		return nil, err
+	}
+
+	const (
+		pageSize = uint16(800)
+		maxPages = 8 // 800×8 ≈ 25 年日K, 远超持仓跟踪所需
+	)
+	seen := map[string]bool{}
+	out := []*protocol.Kline(nil)
+	for page := 0; page < maxPages; page++ {
+		bars, err := cli.ExBars(9, protocol.ExchangeHK.Uint8(), body, uint16(page) * pageSize, pageSize)
+		if err != nil {
+			// 连接可能已假死: 重拨一次再试本页
+			resetHKClient()
+			if cli, err = getHKClient(); err != nil {
+				return nil, err
+			}
+			if bars, err = cli.ExBars(9, protocol.ExchangeHK.Uint8(), body, uint16(page) * pageSize, pageSize); err != nil {
+				return nil, err
+			}
+		}
+		for _, b := range bars {
+			t, perr := time.ParseInLocation("2006-01-02 15:04", b.Datetime, time.Local)
+			if perr != nil {
+				continue
+			}
+			key := t.Format(time.DateOnly)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, &protocol.Kline{
+				Time:   t,
+				Open:   protocol.Price(b.Open * 100),
+				High:   protocol.Price(b.High * 100),
+				Low:    protocol.Price(b.Low * 100),
+				Close:  protocol.Price(b.Close * 100),
+				Last:   0, // 港股日K无昨收字段, 恒 0; 昨收请取前一交易日 Close
+				Volume: int64(b.Trade),
+				Amount: protocol.Price(b.Amount * 100),
+			})
+		}
+		if len(bars) < int(pageSize) {
+			break
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out, nil
+}
+
+// handleHKKlineHistory 港股历史K线(ExHq 源, 不复权)。
+// day/week/month 统一由日K合成(week/month 复用 A 股转换函数);
+// 响应形状与 A 股 kline-history 端点一致(KlineResp), 日期过滤语义相同。
+func handleHKKlineHistory(w http.ResponseWriter, code, klineType string, start, end time.Time) {
+	days, err := hkKlineDayAll(code)
+	if err != nil {
+		log.Printf("[港股] %s 日K获取失败: %v", code, err)
+		errorResponse(w, fmt.Sprintf("获取K线失败: 港股 %s 日线获取失败: %v", code, err))
+		return
+	}
+	if len(days) == 0 {
+		errorResponse(w, "获取K线失败: 无数据")
+		return
+	}
+
+	resp := &protocol.KlineResp{List: days, Count: uint16(len(days))}
+	switch klineType {
+	case "week":
+		resp = convertToWeekKline(resp)
+	case "month":
+		resp = convertToMonthKline(resp)
+	}
+
+	filtered := make([]*protocol.Kline, 0, len(resp.List))
+	for _, k := range resp.List {
+		if k != nil && inDateRange(k.Time, start, end) {
+			filtered = append(filtered, k)
+		}
+	}
+	resp.List = filtered
+	resp.Count = uint16(len(filtered))
+
+	successResponse(w, resp)
 }

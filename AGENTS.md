@@ -129,6 +129,7 @@ extend/                   ← higher-level utilities built on tdx
 - **TDX 服务端按固定结构逐字节解析请求帧, 对字节流错位零容忍**(实测单字节杂散即可让连接后续请求全部超时)。所有标准协议帧的代码域必须是 **1 字节市场 + 6 字节代码** —— `protocol.PadCode6` 负责右侧 `\x00` 补齐, quote/kline/trade/gbbq/minute/history_*/callAuction 的 Frame 构建器均已接入。**任何新帧构建器嵌入代码必须走 PadCode6**, 否则 5 字节代码(港股/美股/期货)会造成帧短 1 字节: 服务端等满超时不回包, 且吃掉紧随其后的下一帧首字节 —— 一次坏请求污染一个后续请求(2026-10-14 15:12/15:30 下游 patrol P0 的根因; 机制验证工具 `tools/hkprobe`)。
 - **标准行情主机(7709)不提供港股**: 即使帧格式正确, market=31(港股)的报价也会被服务端静默映射成深市错票数据(实测 hk00100 → 返回 sz000100 行情)。因此 `Client.GetQuote` 对非沪深京市场**显式拒绝**(错误文案含市场名, 不含"超时", 下游不会误重试)。
 - **港股报价走扩展行情(7727, TdxExHq)**: web 层 `web/server_hk.go` 懒加载独立连接(启动预热, 失败 8s 拨号预算, 假死自动重拨一次), `handleGetQuote` 按市场分流(`getQuotesMixed`), 混合批次(港股+A股)结果保持入参顺序。ExHq 报价(float 元)经 `exQuoteToQuote` 转成与 A 股同形状的 Quote(厘), Exchange=31。
+- **港股历史K线: 三类 kline-history 端点(kline-history / -ths / -qfq / -tdx)对港股统一分流 ExHq ExBars(category 9 日K, 不复权)** (`handleHKKlineHistory`)。港股没有 gbbq(实测 hk00700 gbbq count=0, gbbq 即 A 股除权除息机制, `GetStockCodes` 只出 A 股故 refresh 也拉不到), 因此港股无前复权能力; 港股日K `Last` 恒 0(昨收取前一交易日 Close), `Volume` 单位是股(A 股为手)。分流同时堵住了"港股代码发往标准主机拿错票数据"的通道(v2.1.5 实测标准主机把 hk00100 静默映射成 sz000100)。
 - **`/api/quote` 失败必写服务端日志**(`[quote] 获取行情失败 codes=...`), 2026-10-14 事故中"服务端零日志"已修复, 排查不再依赖外部探测。
 - **指数行情价格缩放是已知显示 bug(未修)**: `999999` 是上证指数别名(sh000001 同数据), 指数原始价格单位 0.001 而解码按 0.01(厘) → 显示 ×10(如 3800860 实为 3800.86 点)。下游勿将指数 quote 的 Kline 价格直接入库; 待另开单按 Codes 的 Decimal 修正。
 

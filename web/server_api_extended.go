@@ -125,6 +125,14 @@ func handleGetKlineHistoryTDX(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 港股分流: gbbq(A股除权除息)不覆盖港股(实测 hk00700 gbbq count=0),
+	// 历史K线端点对港股统一走 ExHq 不复权日线(见 server_hk.go),
+	// 避免港股代码发往标准行情主机(会拿到静默映射的错票数据)。
+	if isHKCode(code) {
+		handleHKKlineHistory(w, code, klineType, start, end)
+		return
+	}
+
 	var resp *protocol.KlineResp
 	var qerr error
 
@@ -195,6 +203,13 @@ func handleGetKlineHistoryTHS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 港股分流: gbbq(A股除权除息)不覆盖港股(实测 hk00700 gbbq count=0),
+	// 历史K线端点对港股统一走 ExHq 不复权日线(见 server_hk.go)。
+	if isHKCode(code) {
+		handleHKKlineHistory(w, code, klineType, start, end)
+		return
+	}
+
 	var resp *protocol.KlineResp
 	var qerr error
 
@@ -256,6 +271,14 @@ func handleGetKlineHistoryQFQ(w http.ResponseWriter, r *http.Request) {
 	start, end, err := parseKlineDateRange(r)
 	if err != nil {
 		errorResponse(w, err.Error())
+		return
+	}
+
+	// 港股分流(必须先于 gbbq 检查): gbbq(A股除权除息)不覆盖港股,
+	// 实测 hk00700 gbbq 返回 count=0, 走 gbbq 路径只会得到"缓存为空"。
+	// 港股统一走 ExHq 不复权日线(见 server_hk.go), 无前复权。
+	if isHKCode(code) {
+		handleHKKlineHistory(w, code, klineType, start, end)
 		return
 	}
 
