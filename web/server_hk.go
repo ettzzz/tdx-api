@@ -120,18 +120,21 @@ func hkQuoteOnce(body string) (*protocol.Quote, error) {
 	return exQuoteToQuote(body, q), nil
 }
 
-// exQuoteToQuote 扩展行情报价 → 标准行情 Quote 结构,
-// 输出字段与 /api/quote 的 A 股条目保持同一形状(价格为厘)。
+// exQuoteToQuote 扩展行情报价 → 标准行情 Quote 结构。
+// 字段语义与 A 股 quote 完全对齐(2026-10-14 下游复测修正):
+//   - 价格一律 protocol.Yuan()(元→厘, ×1000), 与 A 股 Price 同单位
+//   - Last=昨收(PreClose), Close=现价 —— A 股 quote 的 Last 即昨收
+//   - Volume=ZongLiang, 单位股
 func exQuoteToQuote(code string, q *protocol.ExQuote) *protocol.Quote {
 	out := &protocol.Quote{
 		Exchange: protocol.ExchangeHK,
 		Code:     code,
 		Kline: &protocol.Kline{
-			Last:   protocol.Price(q.Price * 100),
-			Open:   protocol.Price(q.Open * 100),
-			High:   protocol.Price(q.High * 100),
-			Low:    protocol.Price(q.Low * 100),
-			Close:  protocol.Price(q.PreClose * 100),
+			Last:   protocol.Yuan(q.PreClose),
+			Open:   protocol.Yuan(q.Open),
+			High:   protocol.Yuan(q.High),
+			Low:    protocol.Yuan(q.Low),
+			Close:  protocol.Yuan(q.Price),
 			Volume: int64(q.ZongLiang),
 			Time:   time.Now(),
 		},
@@ -139,11 +142,11 @@ func exQuoteToQuote(code string, q *protocol.ExQuote) *protocol.Quote {
 	for i := 0; i < 5; i++ {
 		out.BuyLevel[i] = protocol.PriceLevel{
 			Buy:    true,
-			Price:  protocol.Price(q.Bid[i] * 100),
+			Price:  protocol.Yuan(q.Bid[i]),
 			Number: int(q.BidVol[i]),
 		}
 		out.SellLevel[i] = protocol.PriceLevel{
-			Price:  protocol.Price(q.Ask[i] * 100),
+			Price:  protocol.Yuan(q.Ask[i]),
 			Number: int(q.AskVol[i]),
 		}
 	}
@@ -209,13 +212,16 @@ func hkKlineDayAll(code string) ([]*protocol.Kline, error) {
 			seen[key] = true
 			out = append(out, &protocol.Kline{
 				Time:   t,
-				Open:   protocol.Price(b.Open * 100),
-				High:   protocol.Price(b.High * 100),
-				Low:    protocol.Price(b.Low * 100),
-				Close:  protocol.Price(b.Close * 100),
+				Open:   protocol.Yuan(b.Open),
+				High:   protocol.Yuan(b.High),
+				Low:    protocol.Yuan(b.Low),
+				Close:  protocol.Yuan(b.Close),
 				Last:   0, // 港股日K无昨收字段, 恒 0; 昨收请取前一交易日 Close
-				Volume: int64(b.Trade),
-				Amount: protocol.Price(b.Amount * 100),
+				// ExBars 的 Trade 对港股为万股(与 ExQuote.ZongLiang(股) 实测比 10^4),
+				// 统一换算为股, 与 /api/quote 的 Volume 同单位可比(放量判定依赖此一致性)。
+				// 源数据万股取整, 精度 ±1 万股。
+				Volume: int64(b.Trade) * 10000,
+				Amount: protocol.Yuan(b.Amount),
 			})
 		}
 		if len(bars) < int(pageSize) {

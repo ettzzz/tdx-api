@@ -451,7 +451,17 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 > **端点对比**：本端点走同花顺前复权，`Amount` 字段（成交额）恒为 0（同花顺不返回）。**如需不复权与真实 `Amount` 请使用** `/api/kline-history-tdx`。两者共用同一份请求参数与响应结构。`/api/kline-history-ths` 是本端点的显式命名别名。
 
-> **港股说明（v2.1.6）**：港股代码（5 位，如 `00100` / `hk00700`）在本端点及 `/api/kline-history-tdx`、`/api/kline-history-ths`、`/api/kline-history-qfq` 统一返回**扩展行情源（ExHq, 不复权）日线**。原因：gbbq（A 股除权除息）不覆盖港股（实测 `hk00700` gbbq 返回 count=0），港股无前复权能力。响应形状与 A 股一致，但注意三点差异：① `Last` 字段恒为 0（昨收请取前一交易日 `Close`）；② `Volume` 单位为**股**（A 股为手）；③ 除权除息日价格跳空不复权。周 / 月 K 由日 K 合成，`start_date` / `end_date` 过滤语义相同。港股实时行情走 `/api/quote`（同样支持 5 位代码）。
+> **港股说明（v2.1.7 归一化）**：港股代码（5 位，如 `00100` / `hk00700`）在本端点及 `/api/kline-history-tdx`、`/api/kline-history-ths`、`/api/kline-history-qfq` 统一返回**扩展行情源（ExHq, 不复权）日线**。原因：gbbq（A 股除权除息）不覆盖港股（实测 `hk00700` gbbq 返回 count=0），港股无前复权能力。字段名与 A 股相同，**单位已归一化**（v2.1.7）：
+>
+> | 字段 | A 股 | 港股 |
+> |-----|------|------|
+> | Open/High/Low/Close | 厘（÷1000=元） | 厘（÷1000=港元），**与 A 股同缩放** |
+> | quote `Last` | 昨收 | 昨收（PreClose），语义一致 |
+> | 日线 `Last` | 有值 | **恒 0**（昨收取前一交易日 `Close`） |
+> | `Volume`（quote 与 kline 两端一致） | 手 | **股**（kline 源为万股取整，精度 ±1 万股） |
+> | 复权 | kline-history/-qfq 前复权 | 全部不复权，除权除息日跳空 |
+>
+> 跨市场混用时唯一需要换算的是 `Volume`（手 ↔ 股 ×100）；同市场内 quote 与 kline 直接可比（港股放量判定可用 `quote.Volume > max(近5日 kline.Volume) × 1.1`）。周 / 月 K 由日 K 合成，`start_date` / `end_date` 过滤语义相同。港股实时行情走 `/api/quote`（同样支持 5 位代码）。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
