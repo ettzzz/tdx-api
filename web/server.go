@@ -832,6 +832,10 @@ func main() {
 	http.HandleFunc("/api/realtime/preheat", handleRealtimePreheat)
 	http.HandleFunc("/api/realtime/codes", handleRealtimeCodes)
 
+	// 量比 (通达信线性口径, 5秒粒度, 见 server_volume_ratio.go)
+	http.HandleFunc("/api/volume-ratio", handleVolumeRatio)
+	http.HandleFunc("/api/volume-ratio/history", handleVolumeRatioHistory)
+
 	// 盘后数据 (zhb.zip 盘后包, 见 server_zhb.go; 首次/过期 GET 同步刷新约 6-8s)
 	http.HandleFunc("/api/blocks", handleGetBlocks)
 	http.HandleFunc("/api/blocks/refresh", handleRefreshZhb)
